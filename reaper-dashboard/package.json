@@ -1,0 +1,26 @@
+{
+  "name": "reaper-project-dashboard",
+  "version": "0.1.0",
+  "description": "A studio dashboard for managing REAPER .rpp projects — built with Fable (F#), Elmish and Electron.",
+  "private": true,
+  "main": "electron/main.js",
+  "scripts": {
+    "postinstall": "dotnet tool restore",
+    "compile": "dotnet fable src -o build --noCache",
+    "bundle": "esbuild build/App/Main.js --bundle --outfile=dist/renderer.js --platform=node --external:electron --format=cjs",
+    "build": "npm run compile && npm run bundle",
+    "start": "npm run build && electron .",
+    "app": "electron .",
+    "test:parser": "npm run compile && node tests/parser-smoke.mjs",
+    "watch:fable": "dotnet fable watch src -o build",
+    "watch:bundle": "esbuild build/App/Main.js --bundle --outfile=dist/renderer.js --platform=node --external:electron --format=cjs --watch"
+  },
+  "devDependencies": {
+    "electron": "^31.3.0",
+    "esbuild": "^0.23.0"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  }
+}

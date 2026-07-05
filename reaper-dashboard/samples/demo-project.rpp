@@ -1,0 +1,63 @@
+<REAPER_PROJECT 0.1 "7.11/macOS-arm64" 1719750000
+  RIPPLE 0
+  RECORD_PATH "Audio" ""
+  SAMPLERATE 48000 0 0
+  TEMPO 122 4 4
+  MARKER 1 4 "render" 1 0 1 R {AAAAAAAA-1111-2222-3333-444444444444} 0
+  MARKER 1 191.475 "" 1
+  MARKER 2 32 "Chorus 1" 0 0 1 B {BBBBBBBB-1111-2222-3333-444444444444} 0
+  MARKER 3 4 "intro" 1 23197430 1 R {CCCCCCCC-1111-2222-3333-444444444444} 0
+  MARKER 3 32 "" 1
+  <TRACK {DDDDDDDD-1111-2222-3333-444444444444}
+    NAME "Drums"
+    PEAKCOL 25559807
+    <ITEM
+      POSITION 4
+      LENGTH 60.5
+      NAME "drums take 3"
+      <SOURCE WAVE
+        FILE "Audio/drums.wav"
+      >
+    >
+    <ITEM
+      POSITION 64.5
+      LENGTH 127
+      <SOURCE SECTION
+        LENGTH 127
+        <SOURCE WAVE
+          FILE "Audio/drums outro.wav"
+        >
+      >
+    >
+  >
+  <TRACK {EEEEEEEE-1111-2222-3333-444444444444}
+    NAME "Vox Lead"
+    PEAKCOL 33226751
+    <FXCHAIN
+      <VST "VST3: Pro-Q 3 (FabFilter)" "FabFilter Pro-Q 3.vst3" 0 "" 1234567890{ABCDEF00-0000-0000-0000-000000000000}
+        aGVsbG8=
+      >
+      <JS utility/volume ""
+      >
+    >
+    <ITEM
+      POSITION 8
+      LENGTH 100
+      <SOURCE WAVE
+        FILE "/Volumes/SSD/Session Files/vox_lead_comp.wav"
+      >
+    >
+  >
+  <TRACK {FFFFFFFF-1111-2222-3333-444444444444}
+    NAME "MIDI Keys"
+    <ITEM
+      POSITION 0
+      LENGTH 16
+      <SOURCE MIDI
+        HASDATA 1 960 QN
+        E 0 90 3c 60
+        E 480 80 3c 00
+      >
+    >
+  >
+>

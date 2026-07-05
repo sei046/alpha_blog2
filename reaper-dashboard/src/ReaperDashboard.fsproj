@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>ReaperDashboard</RootNamespace>
+    <WarningLevel>3</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Compile order matters in F#: pure Core first, then app state, then views. -->
+    <Compile Include="Core/Types.fs" />
+    <Compile Include="Core/Format.fs" />
+    <Compile Include="Core/NodeApi.fs" />
+    <Compile Include="Core/RppParser.fs" />
+    <Compile Include="Core/DurationCalculator.fs" />
+    <Compile Include="Core/WarningScanner.fs" />
+    <Compile Include="Core/Settings.fs" />
+    <Compile Include="Core/ReaperLauncher.fs" />
+    <Compile Include="Core/ProjectScanner.fs" />
+    <Compile Include="App/State.fs" />
+    <Compile Include="UI/Badges.fs" />
+    <Compile Include="UI/Sidebar.fs" />
+    <Compile Include="UI/DashboardTable.fs" />
+    <Compile Include="UI/Inspector.fs" />
+    <Compile Include="UI/BottomPanel.fs" />
+    <Compile Include="UI/SettingsModal.fs" />
+    <Compile Include="UI/View.fs" />
+    <Compile Include="App/Main.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Fable.Core" Version="4.3.0" />
+    <PackageReference Include="Fable.Promise" Version="3.2.0" />
+    <PackageReference Include="Fable.Elmish" Version="4.2.0" />
+    <PackageReference Include="Fable.Elmish.React" Version="4.0.0" />
+    <PackageReference Include="Feliz" Version="2.8.0" />
+  </ItemGroup>
+</Project>
