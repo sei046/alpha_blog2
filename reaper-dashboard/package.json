@@ -16,7 +16,7 @@
     "watch:bundle": "esbuild build/App/Main.js --bundle --outfile=dist/renderer.js --platform=node --external:electron --format=cjs --watch"
   },
   "devDependencies": {
-    "electron": "^31.3.0",
+    "electron": "^31.7.7",
     "esbuild": "^0.23.0"
   },
   "dependencies": {
