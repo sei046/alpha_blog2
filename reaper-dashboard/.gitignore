@@ -1,0 +1,9 @@
+node_modules/
+build/
+dist/
+bin/
+obj/
+.fable/
+*.fable-lock
+npm-debug.log*
+.DS_Store
