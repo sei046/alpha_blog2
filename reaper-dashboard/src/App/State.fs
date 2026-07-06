@@ -62,6 +62,12 @@ type Model =
       Search: string
       Sort: SortColumn * SortDir
       Scanning: Set<string>
+      /// Projects with a render in flight (preview/wav/matrix), for the queue.
+      Rendering: Set<string>
+      /// The resolved preview folder (<userData>/previews or the configured one).
+      PreviewFolder: string
+      /// The project currently loaded in the audio player, if any.
+      NowPlaying: string option
       Log: LogEntry list // newest first, capped
       ShowSettings: bool
       SettingsDraft: AppSettings
@@ -94,11 +100,27 @@ type Msg =
     | CloseSettingsModal
     | SaveSettingsModal
     | SetDraftReaperPath of string
+    | SetDraftPreviewFolder of string
     | BrowseReaperApp
     | ReaperAppPicked of string
+    | BrowsePreviewFolder
+    | PreviewFolderPicked of string
     | PersistDone
     | PersistFailed of exn
     | Logged of LogLevel * string
+    // --- Preview rendering + player ---
+    | RenderPreview of paths: string list
+    | RenderMissingPreviews
+    | RenderStalePreviews
+    | RenderProgress of path: string * message: string
+    | RenderPreviewDone of path: string
+    | RenderPreviewFailed of path: string * exn
+    | PlayPreview of path: string
+    | StopPreview
+    // --- Region Render Matrix render (feature 7) ---
+    | RenderMatrix of path: string
+    | RenderMatrixDone of path: string
+    | RenderMatrixFailed of path: string * exn
     // --- Region Render Matrix editor ---
     | OpenMatrixEditor of path: string
     | MatrixEditorLoaded of MatrixEditor
@@ -128,7 +150,7 @@ let private log level msg (model: Model) =
 let matchesFilter (filter: Filter) (p: Project) =
     match filter with
     | FilterAll -> true
-    | FilterNeedsPreview -> p.PreviewMp3Path.IsNone
+    | FilterNeedsPreview -> Project.needsPreview p
     | FilterHasWarnings -> Project.hasBlockingWarnings p
     | FilterMissingRenderRegion -> not (Project.hasRenderRegion p)
     | FilterFolder f -> p.Folder = f
@@ -277,8 +299,8 @@ module Matrix =
 
 // --- Commands ------------------------------------------------------------------
 
-let private scanCmd (path: string) : Cmd<Msg> =
-    Cmd.OfPromise.either ProjectScanner.scan path ProjectScanned (fun e -> ProjectScanFailed (path, e))
+let private scanCmd (previewFolder: string) (path: string) : Cmd<Msg> =
+    Cmd.OfPromise.either (ProjectScanner.scan previewFolder) path ProjectScanned (fun e -> ProjectScanFailed (path, e))
 
 let private persistLibraryCmd (model: Model) : Cmd<Msg> =
     match model.UserData with
@@ -292,6 +314,47 @@ let private persistSettingsCmd (model: Model) : Cmd<Msg> =
     | None -> Cmd.none
     | Some ud ->
         Cmd.OfPromise.either (Settings.saveSettings ud) model.Settings (fun _ -> PersistDone) PersistFailed
+
+/// Kick off a preview render for one project. The output filename keeps the
+/// preview folder tidy and recognisable; the extension REAPER actually writes
+/// depends on the project's render format, so PreviewManager records it in the
+/// manifest and the scan discovers the real file afterwards.
+let private renderPreviewCmd (model: Model) (p: Project) : Cmd<Msg> =
+    let outputBase = NodeApi.path.join (model.PreviewFolder, PreviewPolicy.previewKey p.Path)
+    let req: RenderProject.RenderRequest =
+        { Kind = RenderProject.PreviewRender
+          OutputPath = outputBase + ".wav" // REAPER appends/overrides ext per its render format
+          RenderRegion = Project.tryRenderRegion p }
+    let run () =
+        promise {
+            let! st = NodeApi.fsp.stat p.Path
+            let! text = NodeApi.fsp.readFile (p.Path, "utf8")
+            let onLog msg = Fable.Core.JS.console.log ("[render] " + msg)
+            let! outcome = ReaperRenderer.render model.Settings.ReaperAppPath model.PreviewFolder text req onLog
+            // Record what we rendered from so staleness can be judged later.
+            match RppParser.parse text with
+            | Ok root ->
+                let parsed = RppParser.extract root
+                let projectDir = NodeApi.path.dirname p.Path
+                let media =
+                    p.MediaRefs
+                    |> List.choose (fun r ->
+                        match r.ResolvedPath, r.Mtime with
+                        | Some path, Some mt -> Some { PreviewPolicy.Path = path; PreviewPolicy.Mtime = mt }
+                        | _ -> None)
+                ignore projectDir
+                let manifest: PreviewManager.Manifest =
+                    { ProjectMtime = st.mtimeMs
+                      Media = media
+                      RenderHash = PreviewPolicy.renderSettingsHash root
+                      PreviewFile = NodeApi.path.basename (outcome.OutputPath, "")
+                      Format = NodeApi.path.extname outcome.OutputPath
+                      RenderedAt = NodeApi.nowMs () }
+                do! PreviewManager.writeManifest model.PreviewFolder p.Path manifest
+            | Error _ -> ()
+            return ()
+        }
+    Cmd.OfPromise.either run () (fun _ -> RenderPreviewDone p.Path) (fun e -> RenderPreviewFailed (p.Path, e))
 
 /// Add paths to the library (as placeholders) and kick off scans for them.
 let private addAndScan (paths: string[]) (model: Model) : Model * Cmd<Msg> =
@@ -311,7 +374,7 @@ let private addAndScan (paths: string[]) (model: Model) : Model * Cmd<Msg> =
         else if paths.Length > 0 then
             log LogInfo (sprintf "Re-scanning %d already-imported project(s)…" paths.Length) model
         else model
-    let scans = paths |> Array.toList |> List.map scanCmd
+    let scans = paths |> Array.toList |> List.map (scanCmd model.PreviewFolder)
     model, Cmd.batch (persistLibraryCmd model :: scans)
 
 // --- Init / update ----------------------------------------------------------------
@@ -327,6 +390,9 @@ let init () : Model * Cmd<Msg> =
           Search = ""
           Sort = SortName, Asc
           Scanning = Set.empty
+          Rendering = Set.empty
+          PreviewFolder = ""
+          NowPlaying = None
           Log = []
           ShowSettings = false
           SettingsDraft = defaultSettings
@@ -334,7 +400,7 @@ let init () : Model * Cmd<Msg> =
     let model = log LogInfo "REAPER Project Dashboard started" model
     model, Cmd.OfPromise.either NodeApi.getUserDataPath () UserDataLoaded BootFailed
 
-let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
+let rec update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     match msg with
     | UserDataLoaded ud ->
         let load () =
@@ -347,19 +413,24 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         Cmd.OfPromise.either load () BootLoaded BootFailed
 
     | BootLoaded (settings, library) ->
-        let model = { model with Settings = settings; SettingsDraft = settings }
+        let previewFolder =
+            match model.UserData with
+            | Some ud -> Settings.effectivePreviewFolder ud settings
+            | None -> ""
+        let model = { model with Settings = settings; SettingsDraft = settings; PreviewFolder = previewFolder }
         let model =
             if library.Length > 0 then
                 log LogInfo (sprintf "Loaded library: %d project(s); rescanning…" library.Length) model
             else
                 log LogInfo "Library is empty — import projects to get started" model
+        let model = log LogInfo (sprintf "Preview folder: %s" previewFolder) model
         let projects =
             (model.Projects, library)
             ||> Array.fold (fun acc p -> acc.Add (p, ProjectScanner.placeholder p))
         { model with
             Projects = projects
             Scanning = Set.ofArray library },
-        Cmd.batch (library |> Array.toList |> List.map scanCmd)
+        Cmd.batch (library |> Array.toList |> List.map (scanCmd previewFolder))
 
     | BootFailed e ->
         // Also reused as the generic failure handler for dialog commands.
@@ -444,12 +515,12 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         else
             let model = log LogInfo (sprintf "Rescanning %d project(s)…" paths.Length) model
             { model with Scanning = Set.ofArray paths },
-            Cmd.batch (paths |> Array.toList |> List.map scanCmd)
+            Cmd.batch (paths |> Array.toList |> List.map (scanCmd model.PreviewFolder))
 
     | RescanProjects paths ->
         let model = log LogInfo (sprintf "Rescanning %d project(s)…" paths.Length) model
         { model with Scanning = (model.Scanning, paths) ||> List.fold (fun s p -> s.Add p) },
-        Cmd.batch (paths |> List.map scanCmd)
+        Cmd.batch (paths |> List.map (scanCmd model.PreviewFolder))
 
     | RemoveSelected ->
         // Removes rows from the library only — never touches files on disk.
@@ -522,15 +593,30 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | CloseSettingsModal ->
         { model with ShowSettings = false }, Cmd.none
     | SaveSettingsModal ->
+        let previewFolder =
+            match model.UserData with
+            | Some ud -> Settings.effectivePreviewFolder ud model.SettingsDraft
+            | None -> model.PreviewFolder
+        let folderChanged = previewFolder <> model.PreviewFolder
         let model =
             { model with
                 Settings = model.SettingsDraft
+                PreviewFolder = previewFolder
                 ShowSettings = false }
-        log LogInfo (sprintf "Settings saved (REAPER: %s)" model.Settings.ReaperAppPath) model,
-        persistSettingsCmd model
+        let model = log LogInfo (sprintf "Settings saved (REAPER: %s)" model.Settings.ReaperAppPath) model
+        // A new preview folder means previews must be re-discovered.
+        if folderChanged && not model.Projects.IsEmpty then
+            let paths = model.Projects |> Map.toArray |> Array.map fst
+            let model = log LogInfo "Preview folder changed — rescanning previews…" model
+            { model with Scanning = Set.ofArray paths },
+            Cmd.batch (persistSettingsCmd model :: (paths |> Array.toList |> List.map (scanCmd previewFolder)))
+        else
+            model, persistSettingsCmd model
 
     | SetDraftReaperPath p ->
         { model with SettingsDraft = { model.SettingsDraft with ReaperAppPath = p } }, Cmd.none
+    | SetDraftPreviewFolder p ->
+        { model with SettingsDraft = { model.SettingsDraft with PreviewFolder = p } }, Cmd.none
 
     | BrowseReaperApp ->
         model, Cmd.OfPromise.either NodeApi.chooseApp () ReaperAppPicked BootFailed
@@ -539,11 +625,101 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | ReaperAppPicked p ->
         { model with SettingsDraft = { model.SettingsDraft with ReaperAppPath = p } }, Cmd.none
 
+    | BrowsePreviewFolder ->
+        model,
+        Cmd.OfPromise.either (NodeApi.chooseFolder "Choose preview render folder") model.PreviewFolder PreviewFolderPicked BootFailed
+    | PreviewFolderPicked "" -> model, Cmd.none
+    | PreviewFolderPicked p ->
+        { model with SettingsDraft = { model.SettingsDraft with PreviewFolder = p } }, Cmd.none
+
     | PersistDone -> model, Cmd.none
     | PersistFailed e ->
         log LogError (sprintf "Could not save settings/library: %s" e.Message) model, Cmd.none
 
     | Logged (level, msg) -> log level msg model, Cmd.none
+
+    // --- Preview rendering + player --------------------------------------------
+
+    | RenderPreview paths ->
+        let projects = paths |> List.choose model.Projects.TryFind
+        if projects.IsEmpty then model, Cmd.none
+        else
+            let model =
+                { model with Rendering = (model.Rendering, projects) ||> List.fold (fun s p -> s.Add p.Path) }
+            let model = log LogInfo (sprintf "Queued %d preview render(s)…" projects.Length) model
+            model, Cmd.batch (projects |> List.map (renderPreviewCmd model))
+
+    | RenderMissingPreviews ->
+        let targets =
+            model.Projects |> Map.toList |> List.map snd
+            |> List.filter (fun p -> p.PreviewStatus = PreviewNone)
+        if targets.IsEmpty then log LogInfo "No projects are missing a preview." model, Cmd.none
+        else update (RenderPreview (targets |> List.map (fun p -> p.Path))) model
+
+    | RenderStalePreviews ->
+        let targets =
+            model.Projects |> Map.toList |> List.map snd
+            |> List.filter Project.previewIsStale
+        if targets.IsEmpty then log LogInfo "No previews are stale." model, Cmd.none
+        else update (RenderPreview (targets |> List.map (fun p -> p.Path))) model
+
+    | RenderProgress (_, message) ->
+        log LogInfo message model, Cmd.none
+
+    | RenderPreviewDone path ->
+        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
+        let model =
+            { model with Rendering = model.Rendering.Remove path; Scanning = model.Scanning.Add path }
+        let model = log LogSuccess (sprintf "Preview rendered for %s" name) model
+        // Re-scan so the preview status/pill/player pick up the new file.
+        model, scanCmd model.PreviewFolder path
+
+    | RenderPreviewFailed (path, e) ->
+        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
+        { model with Rendering = model.Rendering.Remove path }
+        |> log LogError (sprintf "Preview render failed for %s: %s" name e.Message),
+        Cmd.none
+
+    | PlayPreview path ->
+        // The <audio> element is driven by NowPlaying in the view.
+        { model with NowPlaying = Some path }, Cmd.none
+    | StopPreview ->
+        { model with NowPlaying = None }, Cmd.none
+
+    // --- Region Render Matrix render (feature 7) -------------------------------
+
+    | RenderMatrix path ->
+        match model.Projects.TryFind path with
+        | None -> model, Cmd.none
+        | Some p ->
+            let name = NodeApi.path.basename (path, NodeApi.path.extname path)
+            let outDir = NodeApi.path.join (p.Folder, "Stems")
+            let req: RenderProject.RenderRequest =
+                { Kind = RenderProject.MatrixRender
+                  OutputPath = outDir
+                  RenderRegion = None }
+            let run () =
+                promise {
+                    let! text = NodeApi.fsp.readFile (path, "utf8")
+                    let onLog msg = Fable.Core.JS.console.log ("[matrix-render] " + msg)
+                    return! ReaperRenderer.render model.Settings.ReaperAppPath model.PreviewFolder text req onLog
+                }
+            let model =
+                { model with Rendering = model.Rendering.Add path }
+                |> log LogInfo (sprintf "Rendering Region Render Matrix stems for %s → %s" name outDir)
+            model, Cmd.OfPromise.either run () (fun _ -> RenderMatrixDone path) (fun e -> RenderMatrixFailed (path, e))
+
+    | RenderMatrixDone path ->
+        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
+        { model with Rendering = model.Rendering.Remove path }
+        |> log LogSuccess (sprintf "Region Render Matrix stems rendered for %s" name),
+        Cmd.none
+
+    | RenderMatrixFailed (path, e) ->
+        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
+        { model with Rendering = model.Rendering.Remove path }
+        |> log LogError (sprintf "Matrix render failed for %s: %s" name e.Message),
+        Cmd.none
 
     // --- Region Render Matrix editor -------------------------------------------
 
@@ -622,7 +798,7 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         { model with
             MatrixEditor = None
             Scanning = model.Scanning.Add path },
-        scanCmd path
+        scanCmd model.PreviewFolder path
 
     | MatrixSaveFailed e ->
         let model =

@@ -16,11 +16,20 @@ open ReaperDashboard.Core
 
 type AppSettings =
     { ReaperAppPath: string
-      LastImportDir: string }
+      LastImportDir: string
+      /// Where preview renders + their manifests live. Empty = the default
+      /// (<userData>/previews), resolved once userData is known.
+      PreviewFolder: string }
 
 let defaultSettings =
     { ReaperAppPath = "/Applications/REAPER.app"
-      LastImportDir = "" }
+      LastImportDir = ""
+      PreviewFolder = "" }
+
+/// The effective preview folder: the configured one, or <userData>/previews.
+let effectivePreviewFolder (userData: string) (s: AppSettings) : string =
+    if s.PreviewFolder.Trim () <> "" then s.PreviewFolder
+    else NodeApi.path.join (userData, "previews")
 
 let private settingsFile userData = NodeApi.path.join (userData, "settings.json")
 let private libraryFile userData = NodeApi.path.join (userData, "library.json")
@@ -34,14 +43,16 @@ let loadSettings (userData: string) : JS.Promise<AppSettings> =
     |> Promise.map (fun text ->
         let o = JS.JSON.parse text
         { ReaperAppPath = strField o "reaperAppPath" defaultSettings.ReaperAppPath
-          LastImportDir = strField o "lastImportDir" "" })
+          LastImportDir = strField o "lastImportDir" ""
+          PreviewFolder = strField o "previewFolder" "" })
     |> Promise.catch (fun _ -> defaultSettings) // first run / unreadable -> defaults
 
 let saveSettings (userData: string) (s: AppSettings) : JS.Promise<unit> =
     let payload =
         createObj
             [ "reaperAppPath" ==> s.ReaperAppPath
-              "lastImportDir" ==> s.LastImportDir ]
+              "lastImportDir" ==> s.LastImportDir
+              "previewFolder" ==> s.PreviewFolder ]
     NodeApi.fsp.writeFile (settingsFile userData, JS.JSON.stringify (payload, space = 2), "utf8")
 
 let loadLibrary (userData: string) : JS.Promise<string[]> =

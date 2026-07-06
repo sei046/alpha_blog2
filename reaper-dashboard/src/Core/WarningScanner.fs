@@ -16,7 +16,8 @@ type ScanFacts =
       MediaRefs: MediaRef list
       PluginCount: int
       RegionCount: int
-      MatrixState: RenderMatrixState }
+      MatrixState: RenderMatrixState
+      PreviewStatus: PreviewStatus }
 
 let scan (facts: ScanFacts) : ProjectWarning list * ProjectStatus =
     let missing = facts.MediaRefs |> List.filter (fun m -> not m.Exists)
@@ -40,6 +41,14 @@ let scan (facts: ScanFacts) : ProjectWarning list * ProjectStatus =
               Message = "No audio items found — duration unknown"
               Detail = None }
 
+          match facts.PreviewStatus with
+          | PreviewStale reason ->
+            { Kind = PreviewIssue
+              Severity = SevWarning
+              Message = sprintf "Preview is out of date (%s)" (Project.staleReasonLabel reason)
+              Detail = Some "Re-render the MP3 preview to bring it up to date." }
+          | _ -> ()
+
           match facts.MatrixState with
           | MatrixEmpty when facts.RegionCount > 0 ->
             { Kind = MatrixIssue
@@ -54,9 +63,15 @@ let scan (facts: ScanFacts) : ProjectWarning list * ProjectStatus =
               Message = sprintf "%d plugin reference(s) found" facts.PluginCount
               Detail = Some "Installed-plugin validation is best-effort and arrives in a later stage." } ]
 
+    let previewStale =
+        match facts.PreviewStatus with
+        | PreviewStale _ -> true
+        | _ -> false
+
     let status =
         if not missing.IsEmpty then StatusMissingMedia
         elif not facts.HasRenderRegion then StatusNoRenderRegion
+        elif previewStale then StatusPreviewStale
         else StatusReady
 
     warnings, status

@@ -10,12 +10,16 @@
     <Compile Include="Core/Format.fs" />
     <Compile Include="Core/NodeApi.fs" />
     <Compile Include="Core/RppParser.fs" />
+    <Compile Include="Core/PreviewPolicy.fs" />
+    <Compile Include="Core/PreviewManager.fs" />
     <Compile Include="Core/RegionRenderMatrix.fs" />
     <Compile Include="Core/DurationCalculator.fs" />
     <Compile Include="Core/WarningScanner.fs" />
     <Compile Include="Core/Settings.fs" />
     <Compile Include="Core/ReaperLauncher.fs" />
     <Compile Include="Core/RppWriter.fs" />
+    <Compile Include="Core/RenderProject.fs" />
+    <Compile Include="Core/ReaperRenderer.fs" />
     <Compile Include="Core/ProjectScanner.fs" />
     <Compile Include="App/State.fs" />
     <Compile Include="UI/Badges.fs" />

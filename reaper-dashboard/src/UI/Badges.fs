@@ -14,15 +14,17 @@ let statusPill (status: ProjectStatus) =
         | StatusReady -> "ok"
         | StatusMissingMedia -> "error"
         | StatusNoRenderRegion -> "warn"
+        | StatusPreviewStale -> "warn"
         | StatusNeedsScan -> "neutral"
         | StatusScanFailed -> "error"
     pill cls (Project.statusLabel status)
 
-/// MVP 1: previews don't exist yet, so every project is "Needs Preview".
 let previewPill (p: Project) =
-    match p.PreviewMp3Path with
-    | Some _ -> pill "ok" "Preview OK"
-    | None -> pill "neutral" "Needs Preview"
+    match p.PreviewStatus with
+    | PreviewFresh -> pill "ok" "Up to date"
+    | PreviewStale _ -> pill "warn" "Stale"
+    | PreviewNone -> pill "neutral" "Needs Preview"
+    | PreviewNotEvaluated -> pill "neutral" "—"
 
 let matrixPill (p: Project) =
     match p.MatrixState with

@@ -27,8 +27,9 @@ let placeholder (rppPath: string) : Project =
       MatrixState = MatrixNotScanned
       ScanError = None
       ScannedAtMs = 0.0
-      PreviewMp3Path = None
-      PreviewWavPath = None }
+      PreviewPath = None
+      PreviewStatus = PreviewNotEvaluated
+      LastRenderMs = None }
 
 /// Try candidate locations for a media path referenced by the project:
 /// absolute paths as-is; relative paths against the project folder, then
@@ -60,11 +61,14 @@ let private resolveMediaRef
             |> Promise.bind (fun ok -> if ok then Promise.lift (Some c) else firstExisting rest)
 
     firstExisting candidates
-    |> Promise.map (fun resolved ->
-        { RawPath = rawPath
-          SourceType = sourceType
-          ResolvedPath = resolved
-          Exists = resolved.IsSome })
+    |> Promise.bind (fun resolved ->
+        match resolved with
+        | Some c ->
+            NodeApi.tryMtime c
+            |> Promise.map (fun mt ->
+                { RawPath = rawPath; SourceType = sourceType; ResolvedPath = resolved; Exists = true; Mtime = mt })
+        | None ->
+            Promise.lift { RawPath = rawPath; SourceType = sourceType; ResolvedPath = None; Exists = false; Mtime = None })
 
 /// Build a Project record for a file whose text could not be parsed.
 let private failedScan (rppPath: string) (st: NodeApi.Stats option) (error: string) : Project =
@@ -80,10 +84,41 @@ let private failedScan (rppPath: string) (st: NodeApi.Stats option) (error: stri
         ScanError = Some error
         ScannedAtMs = NodeApi.nowMs () }
 
+/// Evaluate the project's preview against its manifest in the preview folder.
+/// Returns (status, preview file path if present, last-render time).
+let private evaluatePreview
+    (previewFolder: string)
+    (rppPath: string)
+    (projectMtime: float)
+    (mediaRefs: MediaRef list)
+    (renderHash: string)
+    : JS.Promise<PreviewStatus * string option * float option> =
+    promise {
+        let! manifest = PreviewManager.readManifest previewFolder rppPath
+        match manifest with
+        | None -> return PreviewNone, None, None
+        | Some m ->
+            let previewFile = NodeApi.path.join (previewFolder, m.PreviewFile)
+            let! exists = NodeApi.fileExists previewFile
+            let currentMedia =
+                mediaRefs
+                |> List.choose (fun r ->
+                    match r.ResolvedPath, r.Mtime with
+                    | Some p, Some mt -> Some { PreviewPolicy.Path = p; PreviewPolicy.Mtime = mt }
+                    | _ -> None)
+            let status =
+                PreviewPolicy.evaluate (Some (PreviewManager.facts m))
+                    { ProjectMtime = projectMtime
+                      Media = currentMedia
+                      RenderHash = renderHash
+                      PreviewFileExists = exists }
+            return status, (if exists then Some previewFile else None), Some m.RenderedAt
+    }
+
 /// Scan one .rpp file. Rejections (unreadable file etc.) are handled by the
 /// caller; parse errors resolve successfully as a StatusScanFailed project so
 /// the row still appears in the dashboard with a clear badge.
-let scan (rppPath: string) : JS.Promise<Project> =
+let scan (previewFolder: string) (rppPath: string) : JS.Promise<Project> =
     promise {
         let! st = NodeApi.fsp.stat rppPath
         let! text = NodeApi.fsp.readFile (rppPath, "utf8")
@@ -103,6 +138,10 @@ let scan (rppPath: string) : JS.Promise<Project> =
             let duration, durationSource =
                 DurationCalculator.calculate parsed.Regions parsed.AudioItems
 
+            let renderHash = PreviewPolicy.renderSettingsHash root
+            let! previewStatus, previewPath, lastRender =
+                evaluatePreview previewFolder rppPath st.mtimeMs mediaRefs renderHash
+
             let hasRender = parsed.Regions |> List.exists Project.isRenderRegion
             let matrixState =
                 if parsed.MatrixEntries.IsEmpty then MatrixEmpty
@@ -114,7 +153,8 @@ let scan (rppPath: string) : JS.Promise<Project> =
                       MediaRefs = mediaRefs
                       PluginCount = parsed.Plugins.Length
                       RegionCount = parsed.Regions.Length
-                      MatrixState = matrixState }
+                      MatrixState = matrixState
+                      PreviewStatus = previewStatus }
 
             return
                 { Path = rppPath
@@ -135,8 +175,9 @@ let scan (rppPath: string) : JS.Promise<Project> =
                   MatrixState = matrixState
                   ScanError = None
                   ScannedAtMs = NodeApi.nowMs ()
-                  PreviewMp3Path = None
-                  PreviewWavPath = None }
+                  PreviewPath = previewPath
+                  PreviewStatus = previewStatus
+                  LastRenderMs = lastRender }
     }
 
 /// Find all .rpp files under a folder (recursive), excluding REAPER's own

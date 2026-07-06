@@ -42,7 +42,9 @@ let private warningList (p: Project) =
                                                 | Some d -> Html.span [ prop.className "w-detail"; prop.text d ]
                                                 | None -> Html.none ] ] ] ] ] ]
 
-let private singleProject (p: Project) (dispatch: Msg -> unit) =
+let private singleProject (model: Model) (p: Project) (dispatch: Msg -> unit) =
+    let isRendering = model.Rendering.Contains p.Path
+    let hasPreview = p.PreviewPath.IsSome
     Html.div
         [ prop.children
               [ Html.div [ prop.className "insp-title"; prop.text p.Name ]
@@ -80,25 +82,42 @@ let private singleProject (p: Project) (dispatch: Msg -> unit) =
                                   prop.children
                                       [ actionButton "Open in REAPER" true "Open this project in REAPER"
                                             (fun () -> dispatch (OpenInReaper [ p.Path ]))
+                                        if hasPreview then
+                                            actionButton "▶ Play Preview" true "Audition the rendered preview"
+                                                (fun () -> dispatch (PlayPreview p.Path))
+                                        actionButton
+                                            (if isRendering then "Rendering…"
+                                             elif Project.previewIsStale p then "Re-render Preview"
+                                             else "Render Preview")
+                                            (not isRendering) "Render an audio preview with REAPER (uses the project's render format)"
+                                            (fun () -> dispatch (RenderPreview [ p.Path ]))
                                         actionButton "Rescan" true "Re-parse this project from disk"
                                             (fun () -> dispatch (RescanProjects [ p.Path ]))
-                                        actionButton "Render MP3 Preview" false "Coming in MVP 2 — preview rendering" ignore
                                         actionButton "Bounce WAV" false "Coming in MVP 3 — WAV bouncing & render queue" ignore
-                                        actionButton "Render Region Matrix" false "Triggering the matrix render via REAPER arrives with the render queue stage" ignore
+                                        actionButton
+                                            (match p.MatrixState with MatrixAssigned n -> sprintf "Render Matrix Stems (%d)" n | _ -> "Render Matrix Stems")
+                                            (not isRendering && (match p.MatrixState with MatrixAssigned _ -> true | _ -> false))
+                                            "Render the Region Render Matrix stems via REAPER (best-effort — verify output on first use)"
+                                            (fun () -> dispatch (RenderMatrix p.Path))
                                         actionButton "Edit Matrix" true "Edit which region × track combinations render as stems"
                                             (fun () -> dispatch (OpenMatrixEditor p.Path)) ] ] ] ] ] ]
 
-let private multiProjects (paths: string list) (dispatch: Msg -> unit) =
+let private multiProjects (model: Model) (paths: string list) (dispatch: Msg -> unit) =
+    let anyRendering = paths |> List.exists model.Rendering.Contains
     Html.div
         [ prop.children
               [ Html.div [ prop.className "insp-title"; prop.text (sprintf "%d projects selected" paths.Length) ]
                 Html.div
                     [ prop.className "multi-note"
-                      prop.text "Batch preview rendering and WAV bouncing arrive in MVP 2/3." ]
+                      prop.text "Batch-render previews for the whole selection, or open them in REAPER." ]
                 Html.div
                     [ prop.className "insp-actions"
                       prop.children
                           [ actionButton
+                                (sprintf "Render %d Previews" paths.Length)
+                                (not anyRendering) "Render an audio preview for each selected project"
+                                (fun () -> dispatch (RenderPreview paths))
+                            actionButton
                                 (sprintf "Open %d projects in REAPER" paths.Length)
                                 (paths.Length <= 8)
                                 (if paths.Length <= 8 then "Open all selected projects"
@@ -116,7 +135,7 @@ let view (model: Model) (dispatch: Msg -> unit) =
                 | 1 ->
                     let path = model.Selected.MinimumElement
                     match model.Projects.TryFind path with
-                    | Some p -> singleProject p dispatch
+                    | Some p -> singleProject model p dispatch
                     | None -> Html.div [ prop.className "insp-empty"; prop.text "Project not found" ]
                 | _ ->
-                    multiProjects (Set.toList model.Selected) dispatch ] ]
+                    multiProjects model (Set.toList model.Selected) dispatch ] ]

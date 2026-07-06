@@ -52,7 +52,9 @@ let private row (model: Model) (dispatch: Msg -> unit) (p: Project) =
                 Html.td
                     [ prop.className "num"
                       prop.text (if p.LastModifiedMs > 0.0 then Format.dateTime p.LastModifiedMs else "—") ]
-                Html.td [ prop.className "num"; prop.text "—" ] // Last render — MVP 2+
+                Html.td
+                    [ prop.className "num"
+                      prop.text (match p.LastRenderMs with Some ms -> Format.dateTime ms | None -> "—") ]
                 Html.td [ prop.className "path-cell"; prop.title p.Path; prop.text p.Path ] ] ]
 
 let private toolbar (model: Model) (dispatch: Msg -> unit) =
@@ -78,6 +80,19 @@ let private toolbar (model: Model) (dispatch: Msg -> unit) =
                       prop.title "Remove selected projects from the library (files on disk are untouched)"
                       prop.disabled model.Selected.IsEmpty
                       prop.onClick (fun _ -> dispatch RemoveSelected) ]
+                Html.div [ prop.className "sep" ]
+                Html.button
+                    [ prop.className "btn"
+                      prop.text (if model.Rendering.IsEmpty then "Render Stale Previews" else sprintf "Rendering %d…" model.Rendering.Count)
+                      prop.title "Re-render every preview that is out of date"
+                      prop.disabled (not model.Rendering.IsEmpty)
+                      prop.onClick (fun _ -> dispatch RenderStalePreviews) ]
+                Html.button
+                    [ prop.className "btn"
+                      prop.text "Render Missing"
+                      prop.title "Render previews for projects that have never been rendered"
+                      prop.disabled (not model.Rendering.IsEmpty)
+                      prop.onClick (fun _ -> dispatch RenderMissingPreviews) ]
                 Html.div [ prop.className "spacer" ]
                 Html.input
                     [ prop.className "search-box"

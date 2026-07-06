@@ -11,6 +11,8 @@ import { fileURLToPath } from "url";
 import { parse, extract, tokenize } from "../build/Core/RppParser.js";
 import { calculate } from "../build/Core/DurationCalculator.js";
 import { load, parseBlock, render as renderMatrix } from "../build/Core/RegionRenderMatrix.js";
+import { evaluate as evalPreview, renderSettingsHash, previewKey } from "../build/Core/PreviewPolicy.js";
+import { buildRenderProjectText } from "../build/Core/RenderProject.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -172,6 +174,102 @@ check("matrix write: insertion keeps rest of file identical", outside(inserted),
 const emptied = renderMatrix(doc, ofArray([]), ofArray([]));
 check("matrix write: fully-empty matrix removes block", load(emptied).BlockRange == null, true);
 check("matrix write: emptied file otherwise identical", emptied, outside(text));
+
+// --- Preview staleness (pure) ---------------------------------------------------
+
+// Fable: option None -> undefined; F# records -> plain objects; DU -> {tag,fields}.
+// `ofArray` (F# list constructor) is imported in the matrix-write section above.
+const mediaStamp = (p, m) => ({ Path: p, Mtime: m });
+const listOf = (xs) => ofArray(xs);
+
+const manifest = {
+  ProjectMtime: 1000,
+  Media: listOf([mediaStamp("/a.wav", 500), mediaStamp("/b.wav", 600)]),
+  RenderHash: "hash1",
+  PreviewFile: "x.wav",
+  Format: ".wav",
+  RenderedAt: 1,
+};
+const facts = (over) => ({
+  ProjectMtime: 1000,
+  Media: listOf([mediaStamp("/a.wav", 500), mediaStamp("/b.wav", 600)]),
+  RenderHash: "hash1",
+  PreviewFileExists: true,
+  ...over,
+});
+
+check("preview: no manifest -> PreviewNone", evalPreview(undefined, facts({})).tag, /* PreviewNone */ 1);
+check("preview: all matching -> Fresh", evalPreview(manifest, facts({})).tag, /* PreviewFresh */ 2);
+check("preview: file gone -> Stale", evalPreview(manifest, facts({ PreviewFileExists: false })).tag, /* PreviewStale */ 3);
+check("preview: project changed -> Stale", evalPreview(manifest, facts({ ProjectMtime: 1001 })).tag, 3);
+check(
+  "preview: media mtime changed -> Stale",
+  evalPreview(manifest, facts({ Media: listOf([mediaStamp("/a.wav", 999), mediaStamp("/b.wav", 600)]) })).tag,
+  3
+);
+check(
+  "preview: media order does not matter",
+  evalPreview(manifest, facts({ Media: listOf([mediaStamp("/b.wav", 600), mediaStamp("/a.wav", 500)]) })).tag,
+  2
+);
+check(
+  "preview: media removed -> Stale",
+  evalPreview(manifest, facts({ Media: listOf([mediaStamp("/a.wav", 500)]) })).tag,
+  3
+);
+check("preview: settings changed -> Stale", evalPreview(manifest, facts({ RenderHash: "hash2" })).tag, 3);
+
+// The stale reason should distinguish causes (field 0 of the DU).
+check("preview: file-gone reason tag", evalPreview(manifest, facts({ PreviewFileExists: false })).fields[0].tag, 0);
+check("preview: settings-changed reason tag", evalPreview(manifest, facts({ RenderHash: "z" })).fields[0].tag, 3);
+
+// renderSettingsHash reacts to RENDER lines and ignores the rest.
+const hashOf = (t) => renderSettingsHash(parse(t).fields[0]);
+const baseR = '<REAPER_PROJECT 0.1\n  TEMPO 120 4 4\n  RENDER_FILE "out.wav"\n  <RENDER_CFG\n    ZXZhdxgA\n  >\n>\n';
+const baseR2 = '<REAPER_PROJECT 0.1\n  TEMPO 130 4 4\n  RENDER_FILE "out.wav"\n  <RENDER_CFG\n    ZXZhdxgA\n  >\n>\n';
+const baseR3 = '<REAPER_PROJECT 0.1\n  TEMPO 120 4 4\n  RENDER_FILE "different.wav"\n  <RENDER_CFG\n    ZXZhdxgA\n  >\n>\n';
+check("hash: ignores non-RENDER change (tempo)", hashOf(baseR) === hashOf(baseR2), true);
+check("hash: reacts to RENDER_FILE change", hashOf(baseR) === hashOf(baseR3), false);
+
+check("previewKey: filesystem-safe", /^[A-Za-z0-9_]+-[0-9a-f]{8}$/.test(previewKey("/Vol/My Song (mix).rpp")), true);
+check(
+  "previewKey: same name diff folder -> diff key",
+  previewKey("/a/Song.rpp") === previewKey("/b/Song.rpp"),
+  false
+);
+
+// --- Render-project transform (pure) --------------------------------------------
+
+const projForRender =
+  '<REAPER_PROJECT 0.1 "7" 1\n' +
+  '  RECORD_PATH "Audio" ""\n' +
+  '  RENDER_FILE "old/output.wav"\n' +
+  '  RENDER_PATTERN "$project"\n' +
+  '  <RENDER_CFG\n    ZXZhdxgA\n  >\n' +
+  '  <TRACK {G1}\n    NAME "Drums"\n  >\n' +
+  '>\n';
+
+const previewReq = { Kind: { tag: 0 }, OutputPath: "/previews/x.wav", RenderRegion: { Id: "1", Name: "render", Start: 4, End: 191.5, Color: undefined } };
+const renderedProj = buildRenderProjectText(previewReq, projForRender);
+
+check("render-xform: result still parses", parse(renderedProj).tag, 0);
+check("render-xform: RENDER_FILE replaced", renderedProj.includes('RENDER_FILE "/previews/x.wav"'), true);
+check("render-xform: old RENDER_FILE gone", renderedProj.includes('RENDER_FILE "old/output.wav"'), false);
+check("render-xform: single-file pattern", renderedProj.includes('RENDER_PATTERN ""'), true);
+check("render-xform: bounds pinned to render region", renderedProj.includes("RENDER_RANGE 0 4 191.5 0 0"), true);
+check("render-xform: RENDER_CFG (format) preserved", renderedProj.includes("ZXZhdxgA"), true);
+check("render-xform: track data untouched", renderedProj.includes('NAME "Drums"'), true);
+check("render-xform: RECORD_PATH untouched", renderedProj.includes('RECORD_PATH "Audio" ""'), true);
+
+// No render region -> entire project bounds.
+const noRegionReq = { ...previewReq, RenderRegion: undefined };
+check("render-xform: no region -> entire project bounds", buildRenderProjectText(noRegionReq, projForRender).includes("RENDER_RANGE 1 0 0 0 0"), true);
+
+// Missing RENDER_FILE line is inserted, not dropped.
+const noRenderFile = '<REAPER_PROJECT 0.1\n  TEMPO 120 4 4\n>\n';
+const insertedRender = buildRenderProjectText(noRegionReq, noRenderFile);
+check("render-xform: RENDER_FILE inserted when absent", insertedRender.includes('RENDER_FILE "/previews/x.wav"'), true);
+check("render-xform: inserted result parses", parse(insertedRender).tag, 0);
 
 // --- corrupt input must fail loudly, not crash ---------------------------------
 

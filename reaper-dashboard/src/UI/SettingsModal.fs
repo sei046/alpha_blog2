@@ -36,6 +36,25 @@ let view (model: Model) (dispatch: Msg -> unit) =
                                                 [ prop.className "hint"
                                                   prop.text "Default: /Applications/REAPER.app — projects are opened with `open -a` so a running REAPER instance is reused." ] ] ]
                                 Html.div
+                                    [ prop.className "field"
+                                      prop.children
+                                          [ Html.label [ prop.text "Preview render folder" ]
+                                            Html.div
+                                                [ prop.className "field-row"
+                                                  prop.children
+                                                      [ Html.input
+                                                            [ prop.type' "text"
+                                                              prop.placeholder "(default: app data / previews)"
+                                                              prop.value model.SettingsDraft.PreviewFolder
+                                                              prop.onChange (fun (s: string) -> dispatch (SetDraftPreviewFolder s)) ]
+                                                        Html.button
+                                                            [ prop.className "btn"
+                                                              prop.text "Browse…"
+                                                              prop.onClick (fun _ -> dispatch BrowsePreviewFolder) ] ] ]
+                                            Html.div
+                                                [ prop.className "hint"
+                                                  prop.text "Where rendered previews and their manifests are stored. Leave blank to use the app's data folder." ] ] ]
+                                Html.div
                                     [ prop.className "modal-actions"
                                       prop.children
                                           [ Html.button

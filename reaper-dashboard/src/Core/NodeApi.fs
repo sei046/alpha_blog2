@@ -26,6 +26,9 @@ type IFsPromises =
     abstract writeFile: path: string * data: string * encoding: string -> JS.Promise<unit>
     abstract stat: path: string -> JS.Promise<Stats>
     abstract readdir: path: string * options: obj -> JS.Promise<string[]>
+    abstract mkdir: path: string * options: obj -> JS.Promise<obj>
+    abstract unlink: path: string -> JS.Promise<unit>
+    abstract rename: oldPath: string * newPath: string -> JS.Promise<unit>
 
 type IChildProcess =
     abstract spawn: cmd: string * args: string[] * options: obj -> obj
@@ -48,6 +51,23 @@ let fileExists (p: string) : JS.Promise<bool> =
     fsp.stat p
     |> Promise.map (fun _ -> true)
     |> Promise.catch (fun _ -> false)
+
+/// mtime in epoch ms, or None if the file can't be stat'd. Never rejects.
+let tryMtime (p: string) : JS.Promise<float option> =
+    fsp.stat p
+    |> Promise.map (fun st -> Some st.mtimeMs)
+    |> Promise.catch (fun _ -> None)
+
+/// Create a directory (and parents). Never rejects if it already exists.
+let ensureDir (p: string) : JS.Promise<unit> =
+    fsp.mkdir (p, createObj [ "recursive" ==> true ])
+    |> Promise.map (fun _ -> ())
+    |> Promise.catch (fun _ -> ())
+
+/// Delete a file, ignoring "not found". Never rejects.
+let deleteQuiet (p: string) : JS.Promise<unit> =
+    fsp.unlink p
+    |> Promise.catch (fun _ -> ())
 
 /// Recursively list all files under a directory (absolute paths).
 let listFilesRecursive (dir: string) : JS.Promise<string[]> =

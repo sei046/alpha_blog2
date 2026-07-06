@@ -1,15 +1,17 @@
 # REAPER Project Dashboard
 
 A macOS desktop app for managing large numbers of REAPER `.rpp` projects:
-import them into a library, see status/duration/warnings at a glance, and open
-any project in REAPER — with preview rendering, WAV bouncing and a visual
-Region Render Matrix editor arriving in later stages.
+import them into a library, see status/duration/warnings at a glance, keep an
+always-up-to-date audio preview of each project, audition it in a built-in
+player, and open or render any project in REAPER — including a visual Region
+Render Matrix editor for stems.
 
 Built with **Fable** (F# compiled to JavaScript), **Elmish** (model-view-update
 architecture), **Feliz/React** for the UI, and **Electron** as the macOS shell.
 
-**Current stage: MVP 1 (dashboard) + MVP 4/5 (Region Render Matrix viewer &
-editor).** See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full module map
+**Current stage: MVP 1 (dashboard), MVP 2 (preview intelligence + player),
+MVP 4/5 (Region Render Matrix viewer & editor), and the matrix render
+trigger.** See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full module map
 and roadmap.
 
 ---
@@ -60,6 +62,41 @@ preserve-unknown + backup + diff design exists. Before trusting it on
 important sessions, run one save on a scratch project and confirm REAPER
 reads the matrix back as expected (the diff shows you the raw lines).
 Region renaming is deliberately not editable yet.
+
+### Audio previews + player (MVP 2)
+
+- Each project tracks an audio **preview** whose freshness is computed on every
+  scan. The dashboard's **Preview** column shows *Up to date* / *Stale* /
+  *Needs Preview*, and a stale preview flips the project's status pill to
+  **Preview Stale**.
+- A preview is **stale** when any of these differ from when it was rendered:
+  the `.rpp` mtime, any referenced media file's mtime (or a file added/removed),
+  or the project's render settings — plus "the preview file is missing". The
+  exact reason is shown in the inspector's warnings.
+- **Render Preview** (inspector) / **Render Stale Previews** and **Render
+  Missing** (toolbar) / **Render N Previews** (multi-select) drive REAPER to
+  render, then re-scan so the status updates.
+- The bottom **Audio Preview** player is a real audio player: select a project
+  with a preview and hit **▶ Play Preview** to audition it without opening
+  REAPER.
+
+Each render records a small manifest (`<key>.preview.json`) next to the audio
+in the preview folder (configurable in Settings; defaults to the app-data
+folder). The manifest is what staleness is judged against.
+
+### Rendering caveat (previews, matrix stems)
+
+Rendering drives REAPER from the command line
+(`REAPER.app/Contents/MacOS/REAPER -renderproject <temp>`), always on a
+throwaway **copy** of your project with only the output path + bounds rewritten
+— your `.rpp` is never handed to the renderer. The preview keeps your project's
+own render **format** (so it comes out in whatever you normally render to; the
+player handles WAV/MP3/etc). The numeric REAPER render flags are best-effort
+from community knowledge, not an official spec, so on first use confirm a
+render actually produces the file you expect — the activity log prints the
+exact command and verifies the output exists before reporting success. This is
+also why **WAV bounce** (with its own output folder/pattern options) is held
+for the next stage rather than shipped half-verified.
 
 ## Requirements
 

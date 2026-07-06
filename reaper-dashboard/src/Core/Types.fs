@@ -16,6 +16,7 @@ type WarningKind =
     | ParseIssue
     | PluginInfo
     | MatrixIssue
+    | PreviewIssue
 
 type ProjectWarning =
     { Kind: WarningKind
@@ -55,12 +56,14 @@ type AudioItem =
 
 /// A media file referenced by the project.
 /// RawPath is exactly what the .rpp contains; ResolvedPath is where we found
-/// it on disk (absolute), if we found it at all.
+/// it on disk (absolute), if we found it at all. Mtime (epoch ms) is used by
+/// preview staleness detection.
 type MediaRef =
     { RawPath: string
       SourceType: string
       ResolvedPath: string option
-      Exists: bool }
+      Exists: bool
+      Mtime: float option }
 
 type PluginRef =
     { Kind: string   // VST / JS / AU / CLAP / ...
@@ -74,12 +77,27 @@ type RenderMatrixState =
     /// Number of region × track assignments this app fully understands.
     | MatrixAssigned of int
 
+/// Why a rendered preview is considered out of date.
+type StaleReason =
+    | PreviewFileGone   // manifest exists but the audio file is missing
+    | ProjectChanged    // .rpp modified since the preview was rendered
+    | MediaChanged      // a referenced media file changed / was added / removed
+    | SettingsChanged   // the project's render settings changed
+    | ManifestUnreadable
+
+/// State of a project's audio preview, per the "always up-to-date" spec.
+type PreviewStatus =
+    | PreviewNotEvaluated   // before the first scan
+    | PreviewNone           // never rendered
+    | PreviewFresh          // matches the current project + media + settings
+    | PreviewStale of StaleReason
+
 /// Overall project status shown as the main pill in the dashboard.
-/// Later stages add PreviewMissing / PreviewStale / RenderFailed.
 type ProjectStatus =
     | StatusReady
     | StatusMissingMedia
     | StatusNoRenderRegion
+    | StatusPreviewStale
     | StatusNeedsScan
     | StatusScanFailed
 
@@ -102,9 +120,10 @@ type Project =
       MatrixState: RenderMatrixState
       ScanError: string option
       ScannedAtMs: float
-      // Reserved for MVP 2+ (PreviewManager fills these in).
-      PreviewMp3Path: string option
-      PreviewWavPath: string option }
+      // Audio preview (MVP 2): the rendered file on disk (if any) + its state.
+      PreviewPath: string option
+      PreviewStatus: PreviewStatus
+      LastRenderMs: float option }
 
 type LogLevel =
     | LogInfo
@@ -137,11 +156,31 @@ module Project =
         p.Status = StatusScanFailed
         || p.Warnings |> List.exists (fun w -> w.Severity <> SevInfo)
 
+    /// True when the project has no usable, up-to-date preview.
+    let needsPreview (p: Project) =
+        match p.PreviewStatus with
+        | PreviewFresh -> false
+        | _ -> true
+
+    let previewIsStale (p: Project) =
+        match p.PreviewStatus with
+        | PreviewStale _ -> true
+        | _ -> false
+
+    let staleReasonLabel =
+        function
+        | PreviewFileGone -> "preview file missing"
+        | ProjectChanged -> "project changed since render"
+        | MediaChanged -> "media changed since render"
+        | SettingsChanged -> "render settings changed"
+        | ManifestUnreadable -> "preview record unreadable"
+
     let statusLabel =
         function
         | StatusReady -> "Ready"
         | StatusMissingMedia -> "Missing Media"
         | StatusNoRenderRegion -> "No Render Region"
+        | StatusPreviewStale -> "Preview Stale"
         | StatusNeedsScan -> "Needs Scan"
         | StatusScanFailed -> "Scan Failed"
 
@@ -151,5 +190,6 @@ module Project =
         | StatusScanFailed -> 0
         | StatusMissingMedia -> 1
         | StatusNoRenderRegion -> 2
-        | StatusNeedsScan -> 3
-        | StatusReady -> 4
+        | StatusPreviewStale -> 3
+        | StatusNeedsScan -> 4
+        | StatusReady -> 5

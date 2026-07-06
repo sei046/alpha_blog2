@@ -28,23 +28,27 @@ reaper-dashboard/
     │   ├── Format.fs             Pure formatting (durations, dates, sizes)
     │   ├── NodeApi.fs            The ONLY module binding Node/Electron APIs
     │   ├── RppParser.fs          Read-only .rpp tokenizer + tree parser + extractors
+    │   ├── PreviewPolicy.fs      Pure: preview staleness + key/hash
+    │   ├── PreviewManager.fs     Manifest disk IO for preview renders (thin)
     │   ├── RegionRenderMatrix.fs Pure text-surgery for the REGION_RENDER_MATRIX block
     │   ├── DurationCalculator.fs render region → audio bounds → Unknown
     │   ├── WarningScanner.fs     Facts → warnings + overall status (pure)
     │   ├── Settings.fs           settings.json / library.json persistence
     │   ├── ReaperLauncher.fs     Safe `open -a REAPER.app project.rpp`
-    │   ├── RppWriter.fs          The ONLY writer: mtime guard + validate + backup
-    │   └── ProjectScanner.fs     Orchestrates one scan: read → parse → resolve media
+    │   ├── RppWriter.fs          The ONLY project-file writer: mtime guard + validate + backup
+    │   ├── RenderProject.fs      Pure: build the temp render .rpp (output/bounds forced)
+    │   ├── ReaperRenderer.fs     IO: temp project + spawn REAPER + verify output
+    │   └── ProjectScanner.fs     Orchestrates one scan: read → parse → resolve media → preview
     ├── App/
-    │   ├── State.fs              Elmish Model / Msg / init / update (+ Matrix editor)
+    │   ├── State.fs              Elmish Model / Msg / init / update (+ Matrix editor, previews)
     │   └── Main.fs               Entry point, mounts the Elmish program
     └── UI/                   Feliz views (no IO — dispatch messages only)
         ├── Badges.fs             Status pills, severity dots
         ├── Sidebar.fs            Library / filters / imported folders
         ├── DashboardTable.fs     Toolbar + sortable project table
         ├── Inspector.fs          Selected-project details, warnings, actions
-        ├── BottomPanel.fs        Audio player (MVP 2) + activity log
-        ├── SettingsModal.fs      REAPER path configuration
+        ├── BottomPanel.fs        Real audio player + activity log
+        ├── SettingsModal.fs      REAPER path + preview folder
         ├── MatrixEditor.fs       Region Render Matrix grid + dry-run diff modal
         └── View.fs               App shell layout
 ```
@@ -115,18 +119,25 @@ These rules are load-bearing, and `RppWriter` (the only module that writes
 
 ## Roadmap
 
-Done so far: **MVP 1** (dashboard) and **MVP 4/5** (Region Render Matrix
-viewer + editor — built together because a safe editor needs the whole
-`RppWriter` contract anyway). Remaining stages slot into `Core/` without
-disturbing what exists:
+Done so far: **MVP 1** (dashboard), **MVP 2** (preview intelligence + player),
+**MVP 4/5** (Region Render Matrix viewer + editor), and the matrix render
+trigger. Remaining stages slot into `Core/` without disturbing what exists:
 
-| Stage | Feature | New modules |
+| Stage | Feature | Modules |
 |---|---|---|
-| MVP 2 | MP3 previews: staleness detection (project mtime vs preview mtime vs media mtimes), REAPER CLI batch rendering, built-in player | `PreviewManager`, `ReaperRenderer` |
-| MVP 3 | WAV bounce + render queue UI, per-project render logs | `RenderQueue` (+ `ReaperRenderer` growth) |
-| MVP 4 ✅ | Region Render Matrix: parse + visual viewer | `RegionRenderMatrix` |
-| MVP 5 ✅ | Matrix editing: cell/drag/lane toggling, filters, safe save | `RppWriter` (mtime guard, validation, verified backup, dry-run diff) |
-| MVP 6 | Master overview session generation | `MasterOverviewCreator` |
+| MVP 1 ✅ | Dashboard, import, parse, duration, warnings, open in REAPER | RppParser, DurationCalculator, WarningScanner, ProjectScanner |
+| MVP 2 ✅ | Preview staleness (project/media mtimes + render-settings hash), REAPER render, built-in player | PreviewPolicy, PreviewManager, RenderProject, ReaperRenderer |
+| MVP 4 ✅ | Region Render Matrix: parse + visual viewer | RegionRenderMatrix |
+| MVP 5 ✅ | Matrix editing: cell/drag/lane toggling, filters, safe save | RppWriter (mtime guard, validation, verified backup, dry-run diff) |
+| — ✅ | Region Render Matrix render trigger (feature 7) | RenderProject/ReaperRenderer (MatrixRender) |
+| MVP 3 | WAV bounce (output folder/pattern options) + render queue UI + per-project render logs | RenderQueue (+ RenderProject.WavBounce, already stubbed) |
+| MVP 6 | Master overview session generation | MasterOverviewCreator |
+
+Pure/IO split for rendering (same discipline as the matrix writer):
+`PreviewPolicy` and `RenderProject` are pure and unit-tested (staleness policy,
+render-config transform); `PreviewManager` and `ReaperRenderer` are the thin IO
+layers. `WavBounce` bounds/settings already exist in `RenderProject`, so MVP 3
+is mostly a render-queue UI + output-naming options on top of what's here.
 
 Matrix format notes (implemented against fixtures + community knowledge, not
 official docs — hence the preserve-unknown design):
