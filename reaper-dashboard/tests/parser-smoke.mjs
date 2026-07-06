@@ -13,6 +13,7 @@ import { calculate } from "../build/Core/DurationCalculator.js";
 import { load, parseBlock, render as renderMatrix } from "../build/Core/RegionRenderMatrix.js";
 import { evaluate as evalPreview, renderSettingsHash, previewKey } from "../build/Core/PreviewPolicy.js";
 import { buildRenderProjectText } from "../build/Core/RenderProject.js";
+import { expandWavPattern } from "../build/Core/Format.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -260,6 +261,27 @@ check("render-xform: bounds pinned to render region", renderedProj.includes("REN
 check("render-xform: RENDER_CFG (format) preserved", renderedProj.includes("ZXZhdxgA"), true);
 check("render-xform: track data untouched", renderedProj.includes('NAME "Drums"'), true);
 check("render-xform: RECORD_PATH untouched", renderedProj.includes('RECORD_PATH "Audio" ""'), true);
+
+// WAV bounce transform: master mix, single file, keeps format.
+const wavReq = { Kind: { tag: 1 }, OutputPath: "/bounces/Song.wav", RenderRegion: previewReq.RenderRegion };
+const wavProj = buildRenderProjectText(wavReq, projForRender);
+check("wav-xform: RENDER_FILE set", wavProj.includes('RENDER_FILE "/bounces/Song.wav"'), true);
+check("wav-xform: master mix not stems", wavProj.includes("RENDER_STEMS 0"), true);
+check("wav-xform: result parses", parse(wavProj).tag, 0);
+
+// Matrix render transform: region-matrix stems mode + wildcard pattern.
+const matReq = { Kind: { tag: 2 }, OutputPath: "/proj/Stems", RenderRegion: undefined };
+const matProj = buildRenderProjectText(matReq, projForRender);
+check("matrix-xform: region-matrix stems mode", matProj.includes("RENDER_STEMS 32"), true);
+check("matrix-xform: per-region-track pattern", matProj.includes('RENDER_PATTERN "$region-$track"'), true);
+check("matrix-xform: project-regions bounds", matProj.includes("RENDER_RANGE 3 0 0 0 0"), true);
+check("matrix-xform: result parses", parse(matProj).tag, 0);
+
+// WAV filename pattern expansion.
+check("wav pattern: default", expandWavPattern("", "Night Drive"), "Night Drive.wav");
+check("wav pattern: $project token", expandWavPattern("$project_bounce", "Night Drive"), "Night Drive_bounce.wav");
+check("wav pattern: keeps explicit .wav", expandWavPattern("$project.wav", "Song"), "Song.wav");
+check("wav pattern: neutralises path separators", expandWavPattern("$project", "a/b:c"), "a_b_c.wav");
 
 // No render region -> entire project bounds.
 const noRegionReq = { ...previewReq, RenderRegion: undefined };

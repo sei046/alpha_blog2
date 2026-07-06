@@ -113,7 +113,7 @@ body {
   background: var(--bg-panel);
   border-top: 1px solid var(--border);
   display: grid;
-  grid-template-columns: 340px 1fr;
+  grid-template-columns: 320px 320px 1fr;
   min-height: 0;
 }
 
@@ -410,6 +410,66 @@ table.dash tbody tr.selected td.proj-name { color: #fff; }
   background: var(--border-strong);
   margin: 0 2px;
 }
+
+/* Render queue (middle column of the bottom panel) */
+.queue-pane {
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--border);
+  padding: 12px 14px;
+  min-width: 0;
+}
+.queue-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.queue-empty {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+.queue-list { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.queue-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  background: var(--bg-panel-raised);
+  font-size: 12px;
+}
+.queue-kind {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  width: 52px;
+}
+.queue-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.queue-reason {
+  flex: none;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--status-error);
+  font-size: 11px;
+}
+.queue-item .pill { flex: none; }
 
 .log-pane {
   display: flex;

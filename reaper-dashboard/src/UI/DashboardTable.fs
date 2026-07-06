@@ -83,15 +83,13 @@ let private toolbar (model: Model) (dispatch: Msg -> unit) =
                 Html.div [ prop.className "sep" ]
                 Html.button
                     [ prop.className "btn"
-                      prop.text (if model.Rendering.IsEmpty then "Render Stale Previews" else sprintf "Rendering %d…" model.Rendering.Count)
-                      prop.title "Re-render every preview that is out of date"
-                      prop.disabled (not model.Rendering.IsEmpty)
+                      prop.text "Render Stale Previews"
+                      prop.title "Queue a re-render of every preview that is out of date"
                       prop.onClick (fun _ -> dispatch RenderStalePreviews) ]
                 Html.button
                     [ prop.className "btn"
                       prop.text "Render Missing"
-                      prop.title "Render previews for projects that have never been rendered"
-                      prop.disabled (not model.Rendering.IsEmpty)
+                      prop.title "Queue previews for projects that have never been rendered"
                       prop.onClick (fun _ -> dispatch RenderMissingPreviews) ]
                 Html.div [ prop.className "spacer" ]
                 Html.input

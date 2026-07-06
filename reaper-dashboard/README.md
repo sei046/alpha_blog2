@@ -10,9 +10,9 @@ Built with **Fable** (F# compiled to JavaScript), **Elmish** (model-view-update
 architecture), **Feliz/React** for the UI, and **Electron** as the macOS shell.
 
 **Current stage: MVP 1 (dashboard), MVP 2 (preview intelligence + player),
-MVP 4/5 (Region Render Matrix viewer & editor), and the matrix render
-trigger.** See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full module map
-and roadmap.
+MVP 3 (WAV bounce + render queue), MVP 4/5 (Region Render Matrix viewer &
+editor), and the matrix render trigger.** See
+[ARCHITECTURE.md](./ARCHITECTURE.md) for the full module map and roadmap.
 
 ---
 
@@ -84,7 +84,22 @@ Each render records a small manifest (`<key>.preview.json`) next to the audio
 in the preview folder (configurable in Settings; defaults to the app-data
 folder). The manifest is what staleness is judged against.
 
-### Rendering caveat (previews, matrix stems)
+### WAV bounce + render queue (MVP 3)
+
+- **Bounce WAV** (inspector) bounces a single project; **Bounce N WAVs**
+  (multi-select) queues a bounce for each. Bounces use the `render` region if
+  the project has one, otherwise full bounds.
+- Output folder and filename pattern are configurable in Settings (default:
+  next to each `.rpp`, named `$project.wav`). `$project` expands to the project
+  name.
+- All rendering — previews, WAV bounces, and matrix stems — flows through a
+  single **render queue** shown in the bottom panel. Jobs run **one at a time**
+  (REAPER is a single instance, so parallel renders would fight over it), each
+  with a live status: *Queued → Rendering… → Done / Failed*. Failures show the
+  reason inline and never block the rest of the queue. **Clear finished**
+  tidies completed jobs.
+
+### Rendering caveat (previews, WAV bounces, matrix stems)
 
 Rendering drives REAPER from the command line
 (`REAPER.app/Contents/MacOS/REAPER -renderproject <temp>`), always on a
@@ -94,9 +109,7 @@ own render **format** (so it comes out in whatever you normally render to; the
 player handles WAV/MP3/etc). The numeric REAPER render flags are best-effort
 from community knowledge, not an official spec, so on first use confirm a
 render actually produces the file you expect — the activity log prints the
-exact command and verifies the output exists before reporting success. This is
-also why **WAV bounce** (with its own output folder/pattern options) is held
-for the next stage rather than shipped half-verified.
+exact command and verifies the output exists before reporting success.
 
 ## Requirements
 

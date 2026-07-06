@@ -26,6 +26,17 @@ let reaperColor (c: int) : string =
     let rgb = c &&& 0xFFFFFF
     sprintf "rgb(%d,%d,%d)" (rgb &&& 0xFF) ((rgb >>> 8) &&& 0xFF) ((rgb >>> 16) &&& 0xFF)
 
+/// Expand a WAV filename pattern. Supports $project (project name). Always
+/// yields a .wav filename with filesystem-hostile characters neutralised.
+let expandWavPattern (pattern: string) (projectName: string) : string =
+    let p = if pattern.Trim () = "" then "$project" else pattern
+    let expanded = p.Replace ("$project", projectName)
+    let safe =
+        expanded.ToCharArray ()
+        |> Array.map (fun c -> if c = '/' || c = '\\' || c = ':' then '_' else c)
+        |> System.String
+    if safe.ToLowerInvariant().EndsWith ".wav" then safe else safe + ".wav"
+
 let fileSize (bytes: float) =
     if bytes >= 1024.0 * 1024.0 then sprintf "%.1f MB" (bytes / 1024.0 / 1024.0)
     elif bytes >= 1024.0 then sprintf "%.0f KB" (bytes / 1024.0)

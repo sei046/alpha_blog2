@@ -120,24 +120,26 @@ These rules are load-bearing, and `RppWriter` (the only module that writes
 ## Roadmap
 
 Done so far: **MVP 1** (dashboard), **MVP 2** (preview intelligence + player),
-**MVP 4/5** (Region Render Matrix viewer + editor), and the matrix render
-trigger. Remaining stages slot into `Core/` without disturbing what exists:
+**MVP 3** (WAV bounce + render queue), **MVP 4/5** (Region Render Matrix viewer
++ editor), and the matrix render trigger. Remaining stages slot into `Core/`
+without disturbing what exists:
 
 | Stage | Feature | Modules |
 |---|---|---|
 | MVP 1 ✅ | Dashboard, import, parse, duration, warnings, open in REAPER | RppParser, DurationCalculator, WarningScanner, ProjectScanner |
 | MVP 2 ✅ | Preview staleness (project/media mtimes + render-settings hash), REAPER render, built-in player | PreviewPolicy, PreviewManager, RenderProject, ReaperRenderer |
+| MVP 3 ✅ | WAV bounce (output folder/pattern) + sequential render queue for previews/WAVs/stems + per-job status & errors | RenderProject.WavBounce, the `Queue` module in State |
 | MVP 4 ✅ | Region Render Matrix: parse + visual viewer | RegionRenderMatrix |
 | MVP 5 ✅ | Matrix editing: cell/drag/lane toggling, filters, safe save | RppWriter (mtime guard, validation, verified backup, dry-run diff) |
 | — ✅ | Region Render Matrix render trigger (feature 7) | RenderProject/ReaperRenderer (MatrixRender) |
-| MVP 3 | WAV bounce (output folder/pattern options) + render queue UI + per-project render logs | RenderQueue (+ RenderProject.WavBounce, already stubbed) |
 | MVP 6 | Master overview session generation | MasterOverviewCreator |
 
-Pure/IO split for rendering (same discipline as the matrix writer):
-`PreviewPolicy` and `RenderProject` are pure and unit-tested (staleness policy,
-render-config transform); `PreviewManager` and `ReaperRenderer` are the thin IO
-layers. `WavBounce` bounds/settings already exist in `RenderProject`, so MVP 3
-is mostly a render-queue UI + output-naming options on top of what's here.
+The **render queue** lives in `State.fs` (`Queue` module + `RenderJob`): all
+three render kinds enqueue jobs, `PumpQueue` runs the next `JobQueued` one only
+when nothing is `JobRunning` (REAPER is single-instance), and `JobSucceeded` /
+`JobErrored` advance the queue and re-scan previews. Pure/IO split as before:
+`RenderProject` (transform) and `PreviewPolicy` (staleness) are pure and
+unit-tested; `ReaperRenderer`/`PreviewManager` are the thin IO layers.
 
 Matrix format notes (implemented against fixtures + community knowledge, not
 official docs — hence the preserve-unknown design):

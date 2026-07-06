@@ -19,17 +19,27 @@ type AppSettings =
       LastImportDir: string
       /// Where preview renders + their manifests live. Empty = the default
       /// (<userData>/previews), resolved once userData is known.
-      PreviewFolder: string }
+      PreviewFolder: string
+      /// Where WAV bounces are written. Empty = alongside each project.
+      WavBounceFolder: string
+      /// Filename pattern for WAV bounces; "$project" -> the project name.
+      WavPattern: string }
 
 let defaultSettings =
     { ReaperAppPath = "/Applications/REAPER.app"
       LastImportDir = ""
-      PreviewFolder = "" }
+      PreviewFolder = ""
+      WavBounceFolder = ""
+      WavPattern = "$project" }
 
 /// The effective preview folder: the configured one, or <userData>/previews.
 let effectivePreviewFolder (userData: string) (s: AppSettings) : string =
     if s.PreviewFolder.Trim () <> "" then s.PreviewFolder
     else NodeApi.path.join (userData, "previews")
+
+/// Expand a WAV filename pattern (see Format.expandWavPattern — kept there so
+/// it stays pure/testable).
+let expandWavPattern = Format.expandWavPattern
 
 let private settingsFile userData = NodeApi.path.join (userData, "settings.json")
 let private libraryFile userData = NodeApi.path.join (userData, "library.json")
@@ -44,7 +54,9 @@ let loadSettings (userData: string) : JS.Promise<AppSettings> =
         let o = JS.JSON.parse text
         { ReaperAppPath = strField o "reaperAppPath" defaultSettings.ReaperAppPath
           LastImportDir = strField o "lastImportDir" ""
-          PreviewFolder = strField o "previewFolder" "" })
+          PreviewFolder = strField o "previewFolder" ""
+          WavBounceFolder = strField o "wavBounceFolder" ""
+          WavPattern = strField o "wavPattern" defaultSettings.WavPattern })
     |> Promise.catch (fun _ -> defaultSettings) // first run / unreadable -> defaults
 
 let saveSettings (userData: string) (s: AppSettings) : JS.Promise<unit> =
@@ -52,7 +64,9 @@ let saveSettings (userData: string) (s: AppSettings) : JS.Promise<unit> =
         createObj
             [ "reaperAppPath" ==> s.ReaperAppPath
               "lastImportDir" ==> s.LastImportDir
-              "previewFolder" ==> s.PreviewFolder ]
+              "previewFolder" ==> s.PreviewFolder
+              "wavBounceFolder" ==> s.WavBounceFolder
+              "wavPattern" ==> s.WavPattern ]
     NodeApi.fsp.writeFile (settingsFile userData, JS.JSON.stringify (payload, space = 2), "utf8")
 
 let loadLibrary (userData: string) : JS.Promise<string[]> =

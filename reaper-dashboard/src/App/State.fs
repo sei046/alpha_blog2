@@ -51,6 +51,21 @@ type MatrixEditor =
       ShowDiff: bool
       Saving: bool }
 
+/// A single job in the render queue. Jobs run one at a time (REAPER is a
+/// single instance, so parallel renders would fight over it).
+type RenderJobStatus =
+    | JobQueued
+    | JobRunning
+    | JobDone of output: string
+    | JobFailed of reason: string
+
+type RenderJob =
+    { Id: int
+      Path: string
+      Name: string
+      Kind: RenderProject.RenderKind
+      Status: RenderJobStatus }
+
 type Model =
     { UserData: string option
       Settings: AppSettings
@@ -62,8 +77,10 @@ type Model =
       Search: string
       Sort: SortColumn * SortDir
       Scanning: Set<string>
-      /// Projects with a render in flight (preview/wav/matrix), for the queue.
-      Rendering: Set<string>
+      /// The render queue (previews, WAV bounces, matrix renders), newest last.
+      /// Jobs run sequentially; finished jobs stay until cleared.
+      Queue: RenderJob list
+      NextJobId: int
       /// The resolved preview folder (<userData>/previews or the configured one).
       PreviewFolder: string
       /// The project currently loaded in the audio player, if any.
@@ -101,26 +118,30 @@ type Msg =
     | SaveSettingsModal
     | SetDraftReaperPath of string
     | SetDraftPreviewFolder of string
+    | SetDraftWavFolder of string
+    | SetDraftWavPattern of string
     | BrowseReaperApp
     | ReaperAppPicked of string
     | BrowsePreviewFolder
     | PreviewFolderPicked of string
+    | BrowseWavFolder
+    | WavFolderPicked of string
     | PersistDone
     | PersistFailed of exn
     | Logged of LogLevel * string
-    // --- Preview rendering + player ---
+    // --- Render queue: previews / WAV bounces / matrix stems ---
     | RenderPreview of paths: string list
     | RenderMissingPreviews
     | RenderStalePreviews
-    | RenderProgress of path: string * message: string
-    | RenderPreviewDone of path: string
-    | RenderPreviewFailed of path: string * exn
+    | BounceWav of paths: string list
+    | RenderMatrix of path: string
+    | PumpQueue
+    | JobSucceeded of jobId: int * output: string
+    | JobErrored of jobId: int * exn
+    | ClearFinishedJobs
+    // --- Audio player ---
     | PlayPreview of path: string
     | StopPreview
-    // --- Region Render Matrix render (feature 7) ---
-    | RenderMatrix of path: string
-    | RenderMatrixDone of path: string
-    | RenderMatrixFailed of path: string * exn
     // --- Region Render Matrix editor ---
     | OpenMatrixEditor of path: string
     | MatrixEditorLoaded of MatrixEditor
@@ -315,46 +336,101 @@ let private persistSettingsCmd (model: Model) : Cmd<Msg> =
     | Some ud ->
         Cmd.OfPromise.either (Settings.saveSettings ud) model.Settings (fun _ -> PersistDone) PersistFailed
 
-/// Kick off a preview render for one project. The output filename keeps the
-/// preview folder tidy and recognisable; the extension REAPER actually writes
-/// depends on the project's render format, so PreviewManager records it in the
-/// manifest and the scan discovers the real file afterwards.
-let private renderPreviewCmd (model: Model) (p: Project) : Cmd<Msg> =
-    let outputBase = NodeApi.path.join (model.PreviewFolder, PreviewPolicy.previewKey p.Path)
-    let req: RenderProject.RenderRequest =
-        { Kind = RenderProject.PreviewRender
-          OutputPath = outputBase + ".wav" // REAPER appends/overrides ext per its render format
-          RenderRegion = Project.tryRenderRegion p }
-    let run () =
-        promise {
-            let! st = NodeApi.fsp.stat p.Path
-            let! text = NodeApi.fsp.readFile (p.Path, "utf8")
-            let onLog msg = Fable.Core.JS.console.log ("[render] " + msg)
-            let! outcome = ReaperRenderer.render model.Settings.ReaperAppPath model.PreviewFolder text req onLog
-            // Record what we rendered from so staleness can be judged later.
-            match RppParser.parse text with
-            | Ok root ->
-                let parsed = RppParser.extract root
-                let projectDir = NodeApi.path.dirname p.Path
-                let media =
-                    p.MediaRefs
-                    |> List.choose (fun r ->
-                        match r.ResolvedPath, r.Mtime with
-                        | Some path, Some mt -> Some { PreviewPolicy.Path = path; PreviewPolicy.Mtime = mt }
-                        | _ -> None)
-                ignore projectDir
-                let manifest: PreviewManager.Manifest =
-                    { ProjectMtime = st.mtimeMs
-                      Media = media
-                      RenderHash = PreviewPolicy.renderSettingsHash root
-                      PreviewFile = NodeApi.path.basename (outcome.OutputPath, "")
-                      Format = NodeApi.path.extname outcome.OutputPath
-                      RenderedAt = NodeApi.nowMs () }
-                do! PreviewManager.writeManifest model.PreviewFolder p.Path manifest
-            | Error _ -> ()
-            return ()
-        }
-    Cmd.OfPromise.either run () (fun _ -> RenderPreviewDone p.Path) (fun e -> RenderPreviewFailed (p.Path, e))
+// --- Render queue ---------------------------------------------------------------
+
+module Queue =
+
+    let kindLabel =
+        function
+        | RenderProject.PreviewRender -> "Preview"
+        | RenderProject.WavBounce -> "WAV"
+        | RenderProject.MatrixRender -> "Matrix"
+
+    let isActive (j: RenderJob) =
+        match j.Status with
+        | JobQueued | JobRunning -> true
+        | _ -> false
+
+    /// A path is "busy" if it has a queued or running job (any kind).
+    let pathBusy (model: Model) (path: string) =
+        model.Queue |> List.exists (fun j -> j.Path = path && isActive j)
+
+    let anyRunning (model: Model) =
+        model.Queue |> List.exists (fun j -> j.Status = JobRunning)
+
+    let hasFinished (model: Model) =
+        model.Queue |> List.exists (fun j -> not (isActive j))
+
+    /// The output path/dir for a job's kind.
+    let outputFor (model: Model) (kind: RenderProject.RenderKind) (p: Project) : string =
+        match kind with
+        | RenderProject.PreviewRender ->
+            NodeApi.path.join (model.PreviewFolder, PreviewPolicy.previewKey p.Path + ".wav")
+        | RenderProject.WavBounce ->
+            let folder =
+                if model.Settings.WavBounceFolder.Trim () <> "" then model.Settings.WavBounceFolder
+                else p.Folder
+            NodeApi.path.join (folder, Settings.expandWavPattern model.Settings.WavPattern p.Name)
+        | RenderProject.MatrixRender ->
+            NodeApi.path.join (p.Folder, "Stems")
+
+/// The IO for one job: read the project, render, and (for previews) write the
+/// staleness manifest. Resolves JobDone/JobFailed for the queue to advance.
+let private runJobCmd (model: Model) (job: RenderJob) : Cmd<Msg> =
+    match model.Projects.TryFind job.Path with
+    | None -> Cmd.ofMsg (JobErrored (job.Id, exn "project no longer in library"))
+    | Some p ->
+        let output = Queue.outputFor model job.Kind p
+        let req: RenderProject.RenderRequest =
+            { Kind = job.Kind
+              OutputPath = output
+              RenderRegion = (match job.Kind with RenderProject.MatrixRender -> None | _ -> Project.tryRenderRegion p) }
+        let run () =
+            promise {
+                let! st = NodeApi.fsp.stat p.Path
+                let! text = NodeApi.fsp.readFile (p.Path, "utf8")
+                let onLog msg = Fable.Core.JS.console.log ("[render] " + msg)
+                let! outcome = ReaperRenderer.render model.Settings.ReaperAppPath model.PreviewFolder text req onLog
+                // Previews record a manifest so staleness can be judged later.
+                if job.Kind = RenderProject.PreviewRender then
+                    match RppParser.parse text with
+                    | Ok root ->
+                        let media =
+                            p.MediaRefs
+                            |> List.choose (fun r ->
+                                match r.ResolvedPath, r.Mtime with
+                                | Some path, Some mt -> Some { PreviewPolicy.Path = path; PreviewPolicy.Mtime = mt }
+                                | _ -> None)
+                        let manifest: PreviewManager.Manifest =
+                            { ProjectMtime = st.mtimeMs
+                              Media = media
+                              RenderHash = PreviewPolicy.renderSettingsHash root
+                              PreviewFile = NodeApi.path.basename (outcome.OutputPath, "")
+                              Format = NodeApi.path.extname outcome.OutputPath
+                              RenderedAt = NodeApi.nowMs () }
+                        do! PreviewManager.writeManifest model.PreviewFolder p.Path manifest
+                    | Error _ -> ()
+                return outcome.OutputPath
+            }
+        Cmd.OfPromise.either run () (fun out -> JobSucceeded (job.Id, out)) (fun e -> JobErrored (job.Id, e))
+
+/// Append jobs for the given projects+kind (skipping paths already busy) and
+/// return the model plus a PumpQueue kick.
+let private enqueue (kind: RenderProject.RenderKind) (projects: Project list) (model: Model) : Model * Cmd<Msg> =
+    let fresh = projects |> List.filter (fun p -> not (Queue.pathBusy model p.Path))
+    if fresh.IsEmpty then model, Cmd.none
+    else
+        let mutable nextId = model.NextJobId
+        let jobs =
+            fresh
+            |> List.map (fun p ->
+                let id = nextId
+                nextId <- nextId + 1
+                { Id = id; Path = p.Path; Name = p.Name; Kind = kind; Status = JobQueued })
+        let model =
+            { model with Queue = model.Queue @ jobs; NextJobId = nextId }
+            |> log LogInfo (sprintf "Queued %d %s render(s)" jobs.Length (Queue.kindLabel kind))
+        model, Cmd.ofMsg PumpQueue
 
 /// Add paths to the library (as placeholders) and kick off scans for them.
 let private addAndScan (paths: string[]) (model: Model) : Model * Cmd<Msg> =
@@ -390,7 +466,8 @@ let init () : Model * Cmd<Msg> =
           Search = ""
           Sort = SortName, Asc
           Scanning = Set.empty
-          Rendering = Set.empty
+          Queue = []
+          NextJobId = 1
           PreviewFolder = ""
           NowPlaying = None
           Log = []
@@ -632,94 +709,96 @@ let rec update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
     | PreviewFolderPicked p ->
         { model with SettingsDraft = { model.SettingsDraft with PreviewFolder = p } }, Cmd.none
 
+    | SetDraftWavFolder p ->
+        { model with SettingsDraft = { model.SettingsDraft with WavBounceFolder = p } }, Cmd.none
+    | SetDraftWavPattern p ->
+        { model with SettingsDraft = { model.SettingsDraft with WavPattern = p } }, Cmd.none
+    | BrowseWavFolder ->
+        model,
+        Cmd.OfPromise.either (NodeApi.chooseFolder "Choose WAV bounce folder") model.Settings.WavBounceFolder WavFolderPicked BootFailed
+    | WavFolderPicked "" -> model, Cmd.none
+    | WavFolderPicked p ->
+        { model with SettingsDraft = { model.SettingsDraft with WavBounceFolder = p } }, Cmd.none
+
     | PersistDone -> model, Cmd.none
     | PersistFailed e ->
         log LogError (sprintf "Could not save settings/library: %s" e.Message) model, Cmd.none
 
     | Logged (level, msg) -> log level msg model, Cmd.none
 
-    // --- Preview rendering + player --------------------------------------------
+    // --- Render queue ----------------------------------------------------------
 
     | RenderPreview paths ->
-        let projects = paths |> List.choose model.Projects.TryFind
-        if projects.IsEmpty then model, Cmd.none
-        else
-            let model =
-                { model with Rendering = (model.Rendering, projects) ||> List.fold (fun s p -> s.Add p.Path) }
-            let model = log LogInfo (sprintf "Queued %d preview render(s)…" projects.Length) model
-            model, Cmd.batch (projects |> List.map (renderPreviewCmd model))
+        enqueue RenderProject.PreviewRender (paths |> List.choose model.Projects.TryFind) model
 
     | RenderMissingPreviews ->
         let targets =
             model.Projects |> Map.toList |> List.map snd
             |> List.filter (fun p -> p.PreviewStatus = PreviewNone)
         if targets.IsEmpty then log LogInfo "No projects are missing a preview." model, Cmd.none
-        else update (RenderPreview (targets |> List.map (fun p -> p.Path))) model
+        else enqueue RenderProject.PreviewRender targets model
 
     | RenderStalePreviews ->
         let targets =
             model.Projects |> Map.toList |> List.map snd
             |> List.filter Project.previewIsStale
         if targets.IsEmpty then log LogInfo "No previews are stale." model, Cmd.none
-        else update (RenderPreview (targets |> List.map (fun p -> p.Path))) model
+        else enqueue RenderProject.PreviewRender targets model
 
-    | RenderProgress (_, message) ->
-        log LogInfo message model, Cmd.none
+    | BounceWav paths ->
+        enqueue RenderProject.WavBounce (paths |> List.choose model.Projects.TryFind) model
 
-    | RenderPreviewDone path ->
-        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
-        let model =
-            { model with Rendering = model.Rendering.Remove path; Scanning = model.Scanning.Add path }
-        let model = log LogSuccess (sprintf "Preview rendered for %s" name) model
-        // Re-scan so the preview status/pill/player pick up the new file.
-        model, scanCmd model.PreviewFolder path
+    | RenderMatrix path ->
+        enqueue RenderProject.MatrixRender (path |> model.Projects.TryFind |> Option.toList) model
 
-    | RenderPreviewFailed (path, e) ->
-        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
-        { model with Rendering = model.Rendering.Remove path }
-        |> log LogError (sprintf "Preview render failed for %s: %s" name e.Message),
-        Cmd.none
+    | PumpQueue ->
+        // Start the next queued job, unless one is already running.
+        if Queue.anyRunning model then model, Cmd.none
+        else
+            match model.Queue |> List.tryFind (fun j -> j.Status = JobQueued) with
+            | None -> model, Cmd.none
+            | Some job ->
+                let queue =
+                    model.Queue
+                    |> List.map (fun j -> if j.Id = job.Id then { j with Status = JobRunning } else j)
+                let model =
+                    { model with Queue = queue }
+                    |> log LogInfo (sprintf "Rendering %s: %s…" (Queue.kindLabel job.Kind) job.Name)
+                model, runJobCmd model job
+
+    | JobSucceeded (jobId, output) ->
+        match model.Queue |> List.tryFind (fun j -> j.Id = jobId) with
+        | None -> model, Cmd.ofMsg PumpQueue
+        | Some job ->
+            let queue = model.Queue |> List.map (fun j -> if j.Id = jobId then { j with Status = JobDone output } else j)
+            let model =
+                { model with Queue = queue }
+                |> log LogSuccess (sprintf "%s rendered: %s → %s" (Queue.kindLabel job.Kind) job.Name output)
+            // Previews change on-disk state the dashboard reads, so re-scan.
+            let rescan =
+                if job.Kind = RenderProject.PreviewRender then
+                    [ scanCmd model.PreviewFolder job.Path ]
+                else []
+            { model with Scanning = if rescan.IsEmpty then model.Scanning else model.Scanning.Add job.Path },
+            Cmd.batch (Cmd.ofMsg PumpQueue :: rescan)
+
+    | JobErrored (jobId, e) ->
+        match model.Queue |> List.tryFind (fun j -> j.Id = jobId) with
+        | None -> model, Cmd.ofMsg PumpQueue
+        | Some job ->
+            let queue = model.Queue |> List.map (fun j -> if j.Id = jobId then { j with Status = JobFailed e.Message } else j)
+            { model with Queue = queue }
+            |> log LogError (sprintf "%s render failed: %s — %s" (Queue.kindLabel job.Kind) job.Name e.Message),
+            Cmd.ofMsg PumpQueue
+
+    | ClearFinishedJobs ->
+        { model with Queue = model.Queue |> List.filter Queue.isActive }, Cmd.none
 
     | PlayPreview path ->
         // The <audio> element is driven by NowPlaying in the view.
         { model with NowPlaying = Some path }, Cmd.none
     | StopPreview ->
         { model with NowPlaying = None }, Cmd.none
-
-    // --- Region Render Matrix render (feature 7) -------------------------------
-
-    | RenderMatrix path ->
-        match model.Projects.TryFind path with
-        | None -> model, Cmd.none
-        | Some p ->
-            let name = NodeApi.path.basename (path, NodeApi.path.extname path)
-            let outDir = NodeApi.path.join (p.Folder, "Stems")
-            let req: RenderProject.RenderRequest =
-                { Kind = RenderProject.MatrixRender
-                  OutputPath = outDir
-                  RenderRegion = None }
-            let run () =
-                promise {
-                    let! text = NodeApi.fsp.readFile (path, "utf8")
-                    let onLog msg = Fable.Core.JS.console.log ("[matrix-render] " + msg)
-                    return! ReaperRenderer.render model.Settings.ReaperAppPath model.PreviewFolder text req onLog
-                }
-            let model =
-                { model with Rendering = model.Rendering.Add path }
-                |> log LogInfo (sprintf "Rendering Region Render Matrix stems for %s → %s" name outDir)
-            model, Cmd.OfPromise.either run () (fun _ -> RenderMatrixDone path) (fun e -> RenderMatrixFailed (path, e))
-
-    | RenderMatrixDone path ->
-        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
-        { model with Rendering = model.Rendering.Remove path }
-        |> log LogSuccess (sprintf "Region Render Matrix stems rendered for %s" name),
-        Cmd.none
-
-    | RenderMatrixFailed (path, e) ->
-        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
-        { model with Rendering = model.Rendering.Remove path }
-        |> log LogError (sprintf "Matrix render failed for %s: %s" name e.Message),
-        Cmd.none
 
     // --- Region Render Matrix editor -------------------------------------------
 

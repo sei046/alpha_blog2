@@ -43,7 +43,7 @@ let private warningList (p: Project) =
                                                 | None -> Html.none ] ] ] ] ] ]
 
 let private singleProject (model: Model) (p: Project) (dispatch: Msg -> unit) =
-    let isRendering = model.Rendering.Contains p.Path
+    let isRendering = Queue.pathBusy model p.Path
     let hasPreview = p.PreviewPath.IsSome
     Html.div
         [ prop.children
@@ -93,7 +93,9 @@ let private singleProject (model: Model) (p: Project) (dispatch: Msg -> unit) =
                                             (fun () -> dispatch (RenderPreview [ p.Path ]))
                                         actionButton "Rescan" true "Re-parse this project from disk"
                                             (fun () -> dispatch (RescanProjects [ p.Path ]))
-                                        actionButton "Bounce WAV" false "Coming in MVP 3 — WAV bouncing & render queue" ignore
+                                        actionButton "Bounce WAV" (not isRendering)
+                                            "Bounce a WAV via REAPER (render region if present, else full bounds)"
+                                            (fun () -> dispatch (BounceWav [ p.Path ]))
                                         actionButton
                                             (match p.MatrixState with MatrixAssigned n -> sprintf "Render Matrix Stems (%d)" n | _ -> "Render Matrix Stems")
                                             (not isRendering && (match p.MatrixState with MatrixAssigned _ -> true | _ -> false))
@@ -103,20 +105,24 @@ let private singleProject (model: Model) (p: Project) (dispatch: Msg -> unit) =
                                             (fun () -> dispatch (OpenMatrixEditor p.Path)) ] ] ] ] ] ]
 
 let private multiProjects (model: Model) (paths: string list) (dispatch: Msg -> unit) =
-    let anyRendering = paths |> List.exists model.Rendering.Contains
+    ignore model
     Html.div
         [ prop.children
               [ Html.div [ prop.className "insp-title"; prop.text (sprintf "%d projects selected" paths.Length) ]
                 Html.div
                     [ prop.className "multi-note"
-                      prop.text "Batch-render previews for the whole selection, or open them in REAPER." ]
+                      prop.text "Batch-render previews or bounce WAVs for the whole selection — jobs run one at a time in the render queue." ]
                 Html.div
                     [ prop.className "insp-actions"
                       prop.children
                           [ actionButton
                                 (sprintf "Render %d Previews" paths.Length)
-                                (not anyRendering) "Render an audio preview for each selected project"
+                                true "Queue an audio preview for each selected project"
                                 (fun () -> dispatch (RenderPreview paths))
+                            actionButton
+                                (sprintf "Bounce %d WAVs" paths.Length)
+                                true "Queue a WAV bounce for each selected project"
+                                (fun () -> dispatch (BounceWav paths))
                             actionButton
                                 (sprintf "Open %d projects in REAPER" paths.Length)
                                 (paths.Length <= 8)

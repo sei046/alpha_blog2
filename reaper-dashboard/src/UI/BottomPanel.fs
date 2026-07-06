@@ -1,7 +1,7 @@
 module ReaperDashboard.UI.BottomPanel
 
-/// Bottom strip: the audio preview player (a real HTML5 <audio> element wired
-/// to the currently-playing project) and the activity log / render queue.
+/// Bottom strip: the audio preview player, the render queue, and the activity
+/// log / render report.
 
 open Feliz
 open ReaperDashboard.Core
@@ -15,7 +15,6 @@ let private levelClass =
     | LogError -> "error"
 
 let private playerPane (model: Model) (dispatch: Msg -> unit) =
-    // The project being auditioned, and its on-disk preview file (if any).
     let playing =
         model.NowPlaying
         |> Option.bind model.Projects.TryFind
@@ -42,7 +41,6 @@ let private playerPane (model: Model) (dispatch: Msg -> unit) =
                                     [ prop.className "player-audio"
                                       prop.controls true
                                       prop.autoPlay true
-                                      // file:// src so Electron plays the local render directly.
                                       prop.src ("file://" + (p.PreviewPath |> Option.defaultValue "")) ]
                                 match p.PreviewStatus with
                                 | PreviewStale reason ->
@@ -55,14 +53,58 @@ let private playerPane (model: Model) (dispatch: Msg -> unit) =
                         [ prop.className "player-placeholder"
                           prop.text "Select a project with a rendered preview and press Play to audition it here — no need to open REAPER." ] ] ]
 
+// --- Render queue ----------------------------------------------------------------
+
+let private jobStatusPill (status: RenderJobStatus) =
+    let cls, label =
+        match status with
+        | JobQueued -> "neutral", "Queued"
+        | JobRunning -> "info", "Rendering…"
+        | JobDone _ -> "ok", "Done"
+        | JobFailed _ -> "error", "Failed"
+    Html.span [ prop.className ("pill " + cls); prop.text label ]
+
+let private queuePane (model: Model) (dispatch: Msg -> unit) =
+    let active = model.Queue |> List.filter Queue.isActive |> List.length
+    Html.div
+        [ prop.className "queue-pane"
+          prop.children
+              [ Html.div
+                    [ prop.className "queue-head"
+                      prop.children
+                          [ Html.span
+                                [ prop.className "pane-heading"
+                                  prop.text (if active > 0 then sprintf "Render Queue · %d active" active else "Render Queue") ]
+                            if Queue.hasFinished model then
+                                Html.button
+                                    [ prop.className "btn small"
+                                      prop.text "Clear finished"
+                                      prop.onClick (fun _ -> dispatch ClearFinishedJobs) ]
+                            else Html.none ] ]
+                if model.Queue.IsEmpty then
+                    Html.div [ prop.className "queue-empty"; prop.text "No renders queued." ]
+                else
+                    Html.div
+                        [ prop.className "queue-list"
+                          prop.children
+                              [ for j in List.rev model.Queue ->
+                                    Html.div
+                                        [ prop.key (string j.Id)
+                                          prop.className "queue-item"
+                                          prop.children
+                                              [ Html.span [ prop.className "queue-kind"; prop.text (Queue.kindLabel j.Kind) ]
+                                                Html.span [ prop.className "queue-name"; prop.title j.Name; prop.text j.Name ]
+                                                match j.Status with
+                                                | JobFailed reason ->
+                                                    Html.span [ prop.className "queue-reason"; prop.title reason; prop.text reason ]
+                                                | _ -> Html.none
+                                                jobStatusPill j.Status ] ] ] ] ] ]
+
 let private logPane (model: Model) =
-    let heading =
-        if model.Rendering.IsEmpty then "Activity Log"
-        else sprintf "Activity Log · %d render(s) in progress" model.Rendering.Count
     Html.div
         [ prop.className "log-pane"
           prop.children
-              [ Html.div [ prop.className "pane-heading"; prop.text heading ]
+              [ Html.div [ prop.className "pane-heading"; prop.text "Activity Log" ]
                 Html.div
                     [ prop.className "log-scroll"
                       prop.children
@@ -76,4 +118,4 @@ let private logPane (model: Model) =
 let view (model: Model) (dispatch: Msg -> unit) =
     Html.div
         [ prop.className "bottom-panel"
-          prop.children [ playerPane model dispatch; logPane model ] ]
+          prop.children [ playerPane model dispatch; queuePane model dispatch; logPane model ] ]
