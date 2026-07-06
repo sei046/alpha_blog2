@@ -24,6 +24,7 @@ let placeholder (rppPath: string) : Project =
       DurationSource = UnknownDuration
       Warnings = []
       Status = StatusNeedsScan
+      MatrixState = MatrixNotScanned
       ScanError = None
       ScannedAtMs = 0.0
       PreviewMp3Path = None
@@ -103,12 +104,17 @@ let scan (rppPath: string) : JS.Promise<Project> =
                 DurationCalculator.calculate parsed.Regions parsed.AudioItems
 
             let hasRender = parsed.Regions |> List.exists Project.isRenderRegion
+            let matrixState =
+                if parsed.MatrixEntries.IsEmpty then MatrixEmpty
+                else MatrixAssigned parsed.MatrixEntries.Length
             let warnings, status =
                 WarningScanner.scan
                     { HasRenderRegion = hasRender
                       AudioItemCount = parsed.AudioItems.Length
                       MediaRefs = mediaRefs
-                      PluginCount = parsed.Plugins.Length }
+                      PluginCount = parsed.Plugins.Length
+                      RegionCount = parsed.Regions.Length
+                      MatrixState = matrixState }
 
             return
                 { Path = rppPath
@@ -126,6 +132,7 @@ let scan (rppPath: string) : JS.Promise<Project> =
                   DurationSource = durationSource
                   Warnings = warnings
                   Status = status
+                  MatrixState = matrixState
                   ScanError = None
                   ScannedAtMs = NodeApi.nowMs ()
                   PreviewMp3Path = None

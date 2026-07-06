@@ -10,6 +10,7 @@ import * as path from "path";
 import { fileURLToPath } from "url";
 import { parse, extract, tokenize } from "../build/Core/RppParser.js";
 import { calculate } from "../build/Core/DurationCalculator.js";
+import { load, parseBlock, render as renderMatrix } from "../build/Core/RegionRenderMatrix.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -99,6 +100,78 @@ check("regions: render region really stripped", arr(pNoRender.Regions).length, 1
 const fallback = calculate(pNoRender.Regions, pNoRender.AudioItems);
 check("duration: audio-bounds fallback", fallback[0], 191.5 - 4);
 check("duration: fallback source (tag)", fallback[1].tag, 1);
+
+// --- Region Render Matrix: parse ------------------------------------------------
+
+const DRUMS = "{DDDDDDDD-1111-2222-3333-444444444444}";
+const VOX = "{EEEEEEEE-1111-2222-3333-444444444444}";
+
+check("matrix: extract finds entries", arr(p.MatrixEntries).map((e) => `${e[0]}|${e[1]}`), [
+  `1|${DRUMS}`,
+  `3|${VOX}`,
+]);
+check("matrix: block found flag", p.MatrixBlockFound, true);
+check("regions: ids extracted", arr(p.Regions).map((r) => r.Id), ["1", "3"]);
+check("tracks: guids extracted", arr(p.Tracks).map((t) => t.Guid)[0], DRUMS);
+
+const doc = load(text);
+const block = parseBlock(doc);
+check("matrix doc: block range found", doc.BlockRange != null, true);
+check("matrix block: entries", arr(block.Entries).length, 2);
+check("matrix block: unknown line preserved verbatim", arr(block.PreservedLines), [
+  '    FUTURE_FLAG 42 "unknown data the editor must preserve"',
+]);
+
+// --- Region Render Matrix: surgical writes ---------------------------------------
+
+// Everything OUTSIDE the block must be byte-identical after a rewrite.
+const outside = (t) => {
+  const lines = t.split("\n");
+  const s = lines.findIndex((l) => l.trim().startsWith("<REGION_RENDER_MATRIX"));
+  if (s < 0) return t;
+  let depth = 1, e = s;
+  for (let i = s + 1; i < lines.length; i++) {
+    const tr = lines[i].trim();
+    if (tr.startsWith("<")) depth++;
+    else if (tr === ">") { depth--; if (depth === 0) { e = i; break; } }
+  }
+  return [...lines.slice(0, s), ...lines.slice(e + 1)].join("\n");
+};
+
+// 1. Identity rewrite: same entries + preserved lines.
+const same = renderMatrix(doc, block.Entries, block.PreservedLines);
+check("matrix write: outside-block text is byte-identical", outside(same), outside(text));
+check("matrix write: identity keeps both entries", arr(parseBlock(load(same)).Entries).length, 2);
+check("matrix write: identity keeps unknown line", arr(parseBlock(load(same)).PreservedLines).length, 1);
+check("matrix write: identity result still parses", parse(same).tag, 0);
+
+// 2. Remove one entry: only that ENTRY line disappears.
+// (F# lists need constructing via Fable's runtime library; locate it by name
+// so the pinned version can move without breaking this test.)
+const fableLib = fs
+  .readdirSync(path.join(here, "..", "build", "fable_modules"))
+  .find((d) => d.startsWith("fable-library-js"));
+const { ofArray } = await import(`../build/fable_modules/${fableLib}/List.js`);
+const oneEntry = ofArray([["1", DRUMS]]);
+const removedText = renderMatrix(doc, oneEntry, block.PreservedLines);
+check("matrix write: removal keeps outside text identical", outside(removedText), outside(text));
+check("matrix write: removal leaves one entry", arr(parseBlock(load(removedText)).Entries).map((e) => e[0]), ["1"]);
+check("matrix write: unknown line survives removal", arr(parseBlock(load(removedText)).PreservedLines).length, 1);
+check("matrix write: removal result still parses", parse(removedText).tag, 0);
+
+// 3. Insert into a project with no matrix block at all.
+const noBlockText = outside(text);
+const docNoBlock = load(noBlockText);
+check("matrix: no block detected in stripped project", docNoBlock.BlockRange == null, true);
+const inserted = renderMatrix(docNoBlock, oneEntry, ofArray([]));
+check("matrix write: inserted block parses", parse(inserted).tag, 0);
+check("matrix write: inserted entry readable", arr(parseBlock(load(inserted)).Entries).map((e) => `${e[0]}|${e[1]}`), [`1|${DRUMS}`]);
+check("matrix write: insertion keeps rest of file identical", outside(inserted), noBlockText);
+
+// 4. Empty matrix + nothing preserved -> block omitted entirely.
+const emptied = renderMatrix(doc, ofArray([]), ofArray([]));
+check("matrix write: fully-empty matrix removes block", load(emptied).BlockRange == null, true);
+check("matrix write: emptied file otherwise identical", emptied, outside(text));
 
 // --- corrupt input must fail loudly, not crash ---------------------------------
 

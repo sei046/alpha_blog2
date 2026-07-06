@@ -25,4 +25,5 @@ let view (model: Model) (dispatch: Msg -> unit) =
                 DashboardTable.view model dispatch
                 Inspector.view model dispatch
                 BottomPanel.view model dispatch
-                SettingsModal.view model dispatch ] ]
+                SettingsModal.view model dispatch
+                MatrixEditor.view model dispatch ] ]

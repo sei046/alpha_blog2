@@ -24,9 +24,11 @@ let previewPill (p: Project) =
     | Some _ -> pill "ok" "Preview OK"
     | None -> pill "neutral" "Needs Preview"
 
-/// MVP 4 parses the Region Render Matrix; until then it is unscanned.
-let matrixPill (_p: Project) =
-    pill "neutral" "Not Scanned"
+let matrixPill (p: Project) =
+    match p.MatrixState with
+    | MatrixNotScanned -> pill "neutral" "Not Scanned"
+    | MatrixEmpty -> pill "warn" "Empty"
+    | MatrixAssigned n -> pill "ok" (sprintf "%d cells" n)
 
 let renderRegionCell (p: Project) =
     match Project.tryRenderRegion p with

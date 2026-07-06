@@ -84,8 +84,9 @@ let private singleProject (p: Project) (dispatch: Msg -> unit) =
                                             (fun () -> dispatch (RescanProjects [ p.Path ]))
                                         actionButton "Render MP3 Preview" false "Coming in MVP 2 — preview rendering" ignore
                                         actionButton "Bounce WAV" false "Coming in MVP 3 — WAV bouncing & render queue" ignore
-                                        actionButton "Render Region Matrix" false "Coming in MVP 4 — Region Render Matrix" ignore
-                                        actionButton "Edit Matrix" false "Coming in MVP 5 — visual matrix editor" ignore ] ] ] ] ] ]
+                                        actionButton "Render Region Matrix" false "Triggering the matrix render via REAPER arrives with the render queue stage" ignore
+                                        actionButton "Edit Matrix" true "Edit which region × track combinations render as stems"
+                                            (fun () -> dispatch (OpenMatrixEditor p.Path)) ] ] ] ] ] ]
 
 let private multiProjects (paths: string list) (dispatch: Msg -> unit) =
     Html.div

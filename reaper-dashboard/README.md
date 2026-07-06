@@ -8,8 +8,9 @@ Region Render Matrix editor arriving in later stages.
 Built with **Fable** (F# compiled to JavaScript), **Elmish** (model-view-update
 architecture), **Feliz/React** for the UI, and **Electron** as the macOS shell.
 
-**Current stage: MVP 1 — project dashboard.** See
-[ARCHITECTURE.md](./ARCHITECTURE.md) for the full module map and roadmap.
+**Current stage: MVP 1 (dashboard) + MVP 4/5 (Region Render Matrix viewer &
+editor).** See [ARCHITECTURE.md](./ARCHITECTURE.md) for the full module map
+and roadmap.
 
 ---
 
@@ -33,8 +34,32 @@ architecture), **Feliz/React** for the UI, and **Electron** as the macOS shell.
 - Right inspector with details, warning list and per-project actions
 - Activity log in the bottom panel
 
-The app **never writes to your `.rpp` files** in this stage. All editing
-features are deferred until the backup + validation layer (see roadmap).
+### Region Render Matrix editor
+
+- The dashboard's **Matrix** column shows the real matrix state per project
+  (Empty / *n* cells).
+- **Edit Matrix** (inspector) opens a full-screen editor: regions as rows
+  (with colours and lengths), tracks as columns (with colours). Click a cell
+  to toggle it, **drag to paint** a range, click a region/track name to
+  toggle the whole lane, filter rows/columns by name. Each enabled cell is a
+  region × track combination REAPER renders as its own stem.
+- Saving is gated behind a **dry-run diff** that lists exactly which
+  `ENTRY` lines will be added/removed — nothing else in the file changes.
+- Every save: verifies the file hasn't changed on disk since the editor
+  opened → validates the edited text re-parses as a project → writes and
+  verifies a timestamped backup (`Song.rpp.backup-YYYYMMDD-HHMMSS`) → only
+  then replaces the file.
+- Any line in the matrix block the app doesn't fully understand (unknown
+  flags, master-track entries, future extensions) is preserved verbatim, and
+  the editor tells you how many such lines exist.
+
+**Format caveat:** the `REGION_RENDER_MATRIX` / `ENTRY <region-id>
+<track-guid>` format was implemented against fixtures and REAPER community
+knowledge, not official documentation — that's exactly why the
+preserve-unknown + backup + diff design exists. Before trusting it on
+important sessions, run one save on a scratch project and confirm REAPER
+reads the matrix back as expected (the diff shows you the raw lines).
+Region renaming is deliberately not editable yet.
 
 ## Requirements
 

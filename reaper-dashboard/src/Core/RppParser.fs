@@ -49,7 +49,13 @@ type ParsedProject =
       /// (source type, raw file path) — deduplicated, order preserved.
       MediaFiles: (string * string) list
       Plugins: PluginRef list
-      RecordPath: string option }
+      RecordPath: string option
+      /// (region id, track guid) pairs from the REGION_RENDER_MATRIX block
+      /// that this app fully understands. Anything else in the block is left
+      /// untouched by the editor (see RegionRenderMatrix.fs).
+      MatrixEntries: (string * string) list
+      /// True if the project has a REGION_RENDER_MATRIX block at all.
+      MatrixBlockFound: bool }
 
 // --- Tokenizer ---------------------------------------------------------------
 
@@ -185,7 +191,8 @@ let extractRegionsAndMarkers (root: RppNode) : Region list * Marker list =
                 | true, (startName, startPos, startColor) ->
                     pending.Remove id |> ignore
                     regions.Add
-                        { Name = startName
+                        { Id = id
+                          Name = startName
                           Start = startPos
                           End = pos
                           Color = startColor }
@@ -197,7 +204,7 @@ let extractRegionsAndMarkers (root: RppNode) : Region list * Marker list =
     // regions rather than being silently dropped.
     for kv in pending do
         let (name, pos, color) = kv.Value
-        regions.Add { Name = name; Start = pos; End = pos; Color = color }
+        regions.Add { Id = kv.Key; Name = name; Start = pos; End = pos; Color = color }
 
     List.ofSeq regions, List.ofSeq markers
 
@@ -236,6 +243,7 @@ let extractTracks (root: RppNode) : TrackInfo list * AudioItem list * (string * 
 
     for trackNode in root.Children do
         if trackNode.IsBlock && trackNode.Tag = "TRACK" then
+            let trackGuid = tokenAt trackNode 1 |> Option.defaultValue ""
             let name =
                 leafChild "NAME" trackNode
                 |> Option.bind (fun n -> tokenAt n 1)
@@ -265,7 +273,7 @@ let extractTracks (root: RppNode) : TrackInfo list * AudioItem list * (string * 
                     audioItems.Add { Position = p; Length = l; SourceTypes = types }
                 | _ -> ()
 
-            tracks.Add { Name = name; Color = color; ItemCount = items.Length }
+            tracks.Add { Guid = trackGuid; Name = name; Color = color; ItemCount = items.Length }
 
     List.ofSeq tracks, List.ofSeq audioItems, List.ofSeq mediaFiles
 
@@ -289,6 +297,28 @@ let rec private collectPlugins (node: RppNode) : PluginRef list =
             here @ collectPlugins c
         else [])
 
+// --- Region Render Matrix (read side) --------------------------------------------
+
+/// Looks like a REAPER GUID token: {XXXXXXXX-....}
+let isGuidToken (s: string) =
+    s.Length >= 2 && s.StartsWith "{" && s.EndsWith "}"
+
+/// ENTRY lines we fully understand: `ENTRY <regionId> <trackGuid>` and
+/// nothing else. Any other shape is intentionally NOT surfaced here so the
+/// editor treats it as opaque data to preserve.
+let private extractMatrix (root: RppNode) : (string * string) list * bool =
+    match root.Children |> List.tryFind (fun c -> c.IsBlock && c.Tag = "REGION_RENDER_MATRIX") with
+    | None -> [], false
+    | Some block ->
+        let entries =
+            block.Children
+            |> List.choose (fun c ->
+                if not c.IsBlock && c.Tag = "ENTRY" && c.Tokens.Length = 3 && isGuidToken c.Tokens.[2] then
+                    Some (c.Tokens.[1], c.Tokens.[2])
+                else
+                    None)
+        entries, true
+
 // --- Top-level extraction ------------------------------------------------------
 
 let private extractRecordPath (root: RppNode) : string option =
@@ -301,6 +331,7 @@ let extract (root: RppNode) : ParsedProject =
     let regions, markers = extractRegionsAndMarkers root
     let tracks, audioItems, mediaFiles = extractTracks root
     let plugins = collectPlugins root |> List.distinctBy (fun p -> p.Kind, p.Name)
+    let matrixEntries, matrixFound = extractMatrix root
     { Root = root
       Regions = regions
       Markers = markers
@@ -308,4 +339,6 @@ let extract (root: RppNode) : ParsedProject =
       AudioItems = audioItems
       MediaFiles = mediaFiles
       Plugins = plugins
-      RecordPath = extractRecordPath root }
+      RecordPath = extractRecordPath root
+      MatrixEntries = matrixEntries
+      MatrixBlockFound = matrixFound }

@@ -14,7 +14,9 @@ type ScanFacts =
     { HasRenderRegion: bool
       AudioItemCount: int
       MediaRefs: MediaRef list
-      PluginCount: int }
+      PluginCount: int
+      RegionCount: int
+      MatrixState: RenderMatrixState }
 
 let scan (facts: ScanFacts) : ProjectWarning list * ProjectStatus =
     let missing = facts.MediaRefs |> List.filter (fun m -> not m.Exists)
@@ -37,6 +39,14 @@ let scan (facts: ScanFacts) : ProjectWarning list * ProjectStatus =
               Severity = SevWarning
               Message = "No audio items found — duration unknown"
               Detail = None }
+
+          match facts.MatrixState with
+          | MatrixEmpty when facts.RegionCount > 0 ->
+            { Kind = MatrixIssue
+              Severity = SevInfo
+              Message = "Region Render Matrix is empty"
+              Detail = Some "No region × track combinations are enabled, so a matrix render would produce no stems. Use Edit Matrix to assign tracks to regions." }
+          | _ -> ()
 
           if facts.PluginCount > 0 then
             { Kind = PluginInfo

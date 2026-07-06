@@ -19,6 +19,13 @@ let durationSourceLabel =
     | ReaperDashboard.Core.FromAudioBounds -> "Audio bounds"
     | ReaperDashboard.Core.UnknownDuration -> "Unknown"
 
+/// Best-effort CSS colour from a REAPER colour int (PEAKCOL / region colour).
+/// REAPER sets 0x1000000 as the "custom colour" flag; the low 24 bits are the
+/// colour with platform-dependent byte order — treated here as R,G,B (macOS).
+let reaperColor (c: int) : string =
+    let rgb = c &&& 0xFFFFFF
+    sprintf "rgb(%d,%d,%d)" (rgb &&& 0xFF) ((rgb >>> 8) &&& 0xFF) ((rgb >>> 16) &&& 0xFF)
+
 let fileSize (bytes: float) =
     if bytes >= 1024.0 * 1024.0 then sprintf "%.1f MB" (bytes / 1024.0 / 1024.0)
     elif bytes >= 1024.0 then sprintf "%.0f KB" (bytes / 1024.0)

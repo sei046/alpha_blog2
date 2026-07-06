@@ -15,6 +15,7 @@ type WarningKind =
     | NoAudioItems
     | ParseIssue
     | PluginInfo
+    | MatrixIssue
 
 type ProjectWarning =
     { Kind: WarningKind
@@ -28,7 +29,9 @@ type DurationSource =
     | UnknownDuration
 
 type Region =
-    { Name: string
+    { /// The MARKER line's id token — also used by REGION_RENDER_MATRIX entries.
+      Id: string
+      Name: string
       Start: float
       End: float
       Color: int option }
@@ -38,7 +41,9 @@ type Marker =
       Position: float }
 
 type TrackInfo =
-    { Name: string
+    { /// The {GUID} token from the <TRACK line — the matrix's track identifier.
+      Guid: string
+      Name: string
       Color: int option
       ItemCount: int }
 
@@ -61,8 +66,16 @@ type PluginRef =
     { Kind: string   // VST / JS / AU / CLAP / ...
       Name: string }
 
+/// State of the project's Region Render Matrix (the region × track grid
+/// REAPER uses to render stems).
+type RenderMatrixState =
+    | MatrixNotScanned
+    | MatrixEmpty
+    /// Number of region × track assignments this app fully understands.
+    | MatrixAssigned of int
+
 /// Overall project status shown as the main pill in the dashboard.
-/// Later stages add PreviewMissing / PreviewStale / MatrixEmpty / RenderFailed.
+/// Later stages add PreviewMissing / PreviewStale / RenderFailed.
 type ProjectStatus =
     | StatusReady
     | StatusMissingMedia
@@ -86,6 +99,7 @@ type Project =
       DurationSource: DurationSource
       Warnings: ProjectWarning list
       Status: ProjectStatus
+      MatrixState: RenderMatrixState
       ScanError: string option
       ScannedAtMs: float
       // Reserved for MVP 2+ (PreviewManager fills these in).

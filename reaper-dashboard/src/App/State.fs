@@ -25,6 +25,32 @@ type SortDir =
     | Asc
     | Desc
 
+/// A matrix cell: (region id, track guid).
+type MatrixCell = string * string
+
+/// State of the Region Render Matrix editor overlay. Opened against a fresh
+/// read of the .rpp; nothing touches disk until the user confirms the diff.
+type MatrixEditor =
+    { ProjectPath: string
+      ProjectName: string
+      /// The exact file text the editor was opened against (backup source).
+      SourceText: string
+      /// mtime at load — the save aborts if the file changed underneath us.
+      LoadedMtimeMs: float
+      Regions: Region list
+      Tracks: TrackInfo list
+      /// Lines inside the matrix block we don't edit (preserved verbatim),
+      /// including entries referencing regions/tracks not in this project.
+      Preserved: string list
+      Original: Set<MatrixCell>
+      Current: Set<MatrixCell>
+      RegionFilter: string
+      TrackFilter: string
+      /// Some enable-state while drag-painting cells, None otherwise.
+      Painting: bool option
+      ShowDiff: bool
+      Saving: bool }
+
 type Model =
     { UserData: string option
       Settings: AppSettings
@@ -38,7 +64,8 @@ type Model =
       Scanning: Set<string>
       Log: LogEntry list // newest first, capped
       ShowSettings: bool
-      SettingsDraft: AppSettings }
+      SettingsDraft: AppSettings
+      MatrixEditor: MatrixEditor option }
 
 type Msg =
     | UserDataLoaded of string
@@ -72,6 +99,25 @@ type Msg =
     | PersistDone
     | PersistFailed of exn
     | Logged of LogLevel * string
+    // --- Region Render Matrix editor ---
+    | OpenMatrixEditor of path: string
+    | MatrixEditorLoaded of MatrixEditor
+    | MatrixEditorLoadFailed of path: string * exn
+    | MatrixPaintStart of MatrixCell
+    | MatrixPaintOver of MatrixCell
+    | MatrixPaintEnd
+    | MatrixToggleRegion of regionId: string
+    | MatrixToggleTrack of trackGuid: string
+    | MatrixEnableAllVisible
+    | MatrixClearAllVisible
+    | MatrixSetRegionFilter of string
+    | MatrixSetTrackFilter of string
+    | MatrixRevert
+    | MatrixShowDiff of bool
+    | MatrixCancel
+    | MatrixSaveConfirmed
+    | MatrixSaved of path: string * backupPath: string
+    | MatrixSaveFailed of exn
 
 // --- Helpers -----------------------------------------------------------------
 
@@ -120,6 +166,114 @@ let importedFolders (model: Model) : (string * int) list =
     |> List.map (fun (_, p) -> p.Folder)
     |> List.countBy id
     |> List.sortBy fst
+
+// --- Matrix editor helpers --------------------------------------------------------
+
+module Matrix =
+
+    let visibleRegions (ed: MatrixEditor) =
+        let f = ed.RegionFilter.Trim().ToLowerInvariant ()
+        ed.Regions
+        |> List.filter (fun r -> f = "" || r.Name.ToLowerInvariant().Contains f)
+
+    let visibleTracks (ed: MatrixEditor) =
+        let f = ed.TrackFilter.Trim().ToLowerInvariant ()
+        ed.Tracks
+        |> List.filter (fun t -> f = "" || t.Name.ToLowerInvariant().Contains f)
+
+    let isDirty (ed: MatrixEditor) = ed.Current <> ed.Original
+
+    let added (ed: MatrixEditor) = Set.difference ed.Current ed.Original
+    let removed (ed: MatrixEditor) = Set.difference ed.Original ed.Current
+
+    /// Entries ordered by region position in the project, then track order —
+    /// keeps saved files deterministic and diffs readable.
+    let orderedEntries (ed: MatrixEditor) : (string * string) list =
+        let regionOrder = ed.Regions |> List.mapi (fun i r -> r.Id, i) |> Map.ofList
+        let trackOrder = ed.Tracks |> List.mapi (fun i t -> t.Guid, i) |> Map.ofList
+        ed.Current
+        |> Set.toList
+        |> List.sortBy (fun (r, t) ->
+            (regionOrder.TryFind r |> Option.defaultValue 9999),
+            (trackOrder.TryFind t |> Option.defaultValue 9999))
+
+    /// Open the editor against a fresh read of the project file. Entries that
+    /// reference regions/tracks missing from the project are demoted to
+    /// preserved lines: shown as "other data", never edited, never lost.
+    let loadEditor (path: string) : Fable.Core.JS.Promise<MatrixEditor> =
+        promise {
+            let! st = NodeApi.fsp.stat path
+            let! text = NodeApi.fsp.readFile (path, "utf8")
+            match RppParser.parse text with
+            | Error e ->
+                return failwith (sprintf "Cannot edit matrix: project failed to parse (%s)" e)
+            | Ok root ->
+                let parsed = RppParser.extract root
+                let doc = RegionRenderMatrix.load text
+                let block = RegionRenderMatrix.parseBlock doc
+                let regionIds = parsed.Regions |> List.map (fun r -> r.Id) |> Set.ofList
+                let trackGuids = parsed.Tracks |> List.map (fun t -> t.Guid) |> Set.ofList
+                let known, orphaned =
+                    block.Entries
+                    |> List.partition (fun (r, g) -> regionIds.Contains r && trackGuids.Contains g)
+                let preserved =
+                    block.PreservedLines
+                    @ (orphaned |> List.map (fun (r, g) -> sprintf "    ENTRY %s %s" r g))
+                let cells = Set.ofList known
+                return
+                    { ProjectPath = path
+                      ProjectName = NodeApi.path.basename (path, NodeApi.path.extname path)
+                      SourceText = text
+                      LoadedMtimeMs = st.mtimeMs
+                      Regions = parsed.Regions
+                      Tracks = parsed.Tracks
+                      Preserved = preserved
+                      Original = cells
+                      Current = cells
+                      RegionFilter = ""
+                      TrackFilter = ""
+                      Painting = None
+                      ShowDiff = false
+                      Saving = false }
+        }
+
+    let private setCell (cell: MatrixCell) (enabled: bool) (ed: MatrixEditor) =
+        { ed with Current = if enabled then ed.Current.Add cell else ed.Current.Remove cell }
+
+    let paintStart (cell: MatrixCell) (ed: MatrixEditor) =
+        let enabling = not (ed.Current.Contains cell)
+        { setCell cell enabling ed with Painting = Some enabling }
+
+    let paintOver (cell: MatrixCell) (ed: MatrixEditor) =
+        match ed.Painting with
+        | Some enabling -> setCell cell enabling ed
+        | None -> ed
+
+    /// Row/column toggles: if every visible cell in the lane is enabled,
+    /// clear the lane; otherwise fill it.
+    let toggleRegion (regionId: string) (ed: MatrixEditor) =
+        let tracks = visibleTracks ed
+        let allOn = tracks |> List.forall (fun t -> ed.Current.Contains (regionId, t.Guid))
+        let current =
+            (ed.Current, tracks)
+            ||> List.fold (fun acc t ->
+                if allOn then acc.Remove (regionId, t.Guid) else acc.Add (regionId, t.Guid))
+        { ed with Current = current }
+
+    let toggleTrack (trackGuid: string) (ed: MatrixEditor) =
+        let regions = visibleRegions ed
+        let allOn = regions |> List.forall (fun r -> ed.Current.Contains (r.Id, trackGuid))
+        let current =
+            (ed.Current, regions)
+            ||> List.fold (fun acc r ->
+                if allOn then acc.Remove (r.Id, trackGuid) else acc.Add (r.Id, trackGuid))
+        { ed with Current = current }
+
+    let setAllVisible (enabled: bool) (ed: MatrixEditor) =
+        let current =
+            (ed.Current, [ for r in visibleRegions ed do for t in visibleTracks ed -> r.Id, t.Guid ])
+            ||> List.fold (fun acc cell -> if enabled then acc.Add cell else acc.Remove cell)
+        { ed with Current = current }
 
 // --- Commands ------------------------------------------------------------------
 
@@ -175,7 +329,8 @@ let init () : Model * Cmd<Msg> =
           Scanning = Set.empty
           Log = []
           ShowSettings = false
-          SettingsDraft = defaultSettings }
+          SettingsDraft = defaultSettings
+          MatrixEditor = None }
     let model = log LogInfo "REAPER Project Dashboard started" model
     model, Cmd.OfPromise.either NodeApi.getUserDataPath () UserDataLoaded BootFailed
 
@@ -389,3 +544,88 @@ let update (msg: Msg) (model: Model) : Model * Cmd<Msg> =
         log LogError (sprintf "Could not save settings/library: %s" e.Message) model, Cmd.none
 
     | Logged (level, msg) -> log level msg model, Cmd.none
+
+    // --- Region Render Matrix editor -------------------------------------------
+
+    | OpenMatrixEditor path ->
+        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
+        let model = log LogInfo (sprintf "Opening Region Render Matrix editor for %s…" name) model
+        model,
+        Cmd.OfPromise.either Matrix.loadEditor path MatrixEditorLoaded (fun e -> MatrixEditorLoadFailed (path, e))
+
+    | MatrixEditorLoaded ed ->
+        let model =
+            if ed.Regions.IsEmpty then
+                log LogWarning (sprintf "%s has no regions — the matrix has no rows to edit" ed.ProjectName) model
+            else
+                log LogInfo
+                    (sprintf "Matrix editor: %d region(s) × %d track(s), %d assignment(s)%s"
+                        ed.Regions.Length ed.Tracks.Length ed.Original.Count
+                        (if ed.Preserved.IsEmpty then "" else sprintf " (+%d preserved line(s) of other matrix data)" ed.Preserved.Length))
+                    model
+        { model with MatrixEditor = Some ed }, Cmd.none
+
+    | MatrixEditorLoadFailed (path, e) ->
+        log LogError (sprintf "Could not open matrix editor for %s: %s" (NodeApi.path.basename (path, "")) e.Message) model,
+        Cmd.none
+
+    | MatrixPaintStart cell ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (Matrix.paintStart cell) }, Cmd.none
+    | MatrixPaintOver cell ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (Matrix.paintOver cell) }, Cmd.none
+    | MatrixPaintEnd ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (fun ed -> { ed with Painting = None }) }, Cmd.none
+    | MatrixToggleRegion rid ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (Matrix.toggleRegion rid) }, Cmd.none
+    | MatrixToggleTrack guid ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (Matrix.toggleTrack guid) }, Cmd.none
+    | MatrixEnableAllVisible ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (Matrix.setAllVisible true) }, Cmd.none
+    | MatrixClearAllVisible ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (Matrix.setAllVisible false) }, Cmd.none
+    | MatrixSetRegionFilter s ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (fun ed -> { ed with RegionFilter = s }) }, Cmd.none
+    | MatrixSetTrackFilter s ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (fun ed -> { ed with TrackFilter = s }) }, Cmd.none
+    | MatrixRevert ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (fun ed -> { ed with Current = ed.Original }) }, Cmd.none
+    | MatrixShowDiff show ->
+        { model with MatrixEditor = model.MatrixEditor |> Option.map (fun ed -> { ed with ShowDiff = show }) }, Cmd.none
+
+    | MatrixCancel ->
+        let model =
+            match model.MatrixEditor with
+            | Some ed when Matrix.isDirty ed ->
+                log LogInfo (sprintf "Matrix editor closed for %s — changes discarded, file untouched" ed.ProjectName) model
+            | _ -> model
+        { model with MatrixEditor = None }, Cmd.none
+
+    | MatrixSaveConfirmed ->
+        match model.MatrixEditor with
+        | None -> model, Cmd.none
+        | Some ed ->
+            let save () =
+                promise {
+                    let doc = RegionRenderMatrix.load ed.SourceText
+                    let newText = RegionRenderMatrix.render doc (Matrix.orderedEntries ed) ed.Preserved
+                    return! RppWriter.saveProjectText ed.ProjectPath ed.SourceText ed.LoadedMtimeMs newText
+                }
+            { model with MatrixEditor = Some { ed with Saving = true } },
+            Cmd.OfPromise.either save () (fun backup -> MatrixSaved (ed.ProjectPath, backup)) MatrixSaveFailed
+
+    | MatrixSaved (path, backup) ->
+        let name = NodeApi.path.basename (path, NodeApi.path.extname path)
+        let model =
+            model
+            |> log LogSuccess (sprintf "Region Render Matrix saved for %s (validated OK)" name)
+            |> log LogInfo (sprintf "Backup written: %s" backup)
+        { model with
+            MatrixEditor = None
+            Scanning = model.Scanning.Add path },
+        scanCmd path
+
+    | MatrixSaveFailed e ->
+        let model =
+            { model with
+                MatrixEditor = model.MatrixEditor |> Option.map (fun ed -> { ed with Saving = false; ShowDiff = false }) }
+        log LogError (sprintf "Matrix save aborted: %s" e.Message) model, Cmd.none
